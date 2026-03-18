@@ -2,7 +2,7 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
-local scriptVersion = "phantom-autofarm-r1"
+local scriptVersion = "phantom-autofarm-r2-safe-gate"
 
 print("--- INICIANDO OSAKA " .. scriptVersion .. " (PHANTOM DEDICADO) ---")
 
@@ -48,7 +48,7 @@ local depositRetreatOffset = -30
 local orbRetreatOffset = -18
 local remoteTouchAttempts = 3
 local orbBlacklistSeconds = 8
-local maxOrbDistance = 350
+local maxOrbDistance = 250
 local maxStoredLogs = 250
 
 local storedLogs = {}
@@ -403,7 +403,7 @@ local function getNearestOrb()
 				local part = resolveOrbPart(descendant)
 				if part then
 					local distance = (root.Position - part.Position).Magnitude
-					if distance <= maxOrbDistance and distance < bestDistance then
+					if distance <= maxOrbDistance and part.Position.Y <= (root.Position.Y + 40) and distance < bestDistance then
 						bestDistance = distance
 						bestModel = descendant
 						bestPart = part
@@ -590,7 +590,7 @@ local function collectOrbCycle()
 	end
 	local orbModel, orbPart, distance = getNearestOrb()
 	if not orbModel or not orbPart then
-		debugLog("ORB_WAIT", string.format("sin orbes phantom held=%d/%d", heldCount, depositTargetCount))
+		debugLog("ORB_WAIT", string.format("sin orbes phantom seguros held=%d/%d maxDist=%d", heldCount, depositTargetCount, maxOrbDistance))
 		taskWait(orbRefreshDelay)
 		return
 	end
@@ -801,6 +801,6 @@ closeButton.MouseButton1Click:Connect(function()
 end)
 
 updateCopyLogsButton()
-debugLog("BOOT", "Ghost Cannon=" .. safePath(getDepositPrompt()))
+debugLog("BOOT", string.format("version=%s Ghost Cannon=%s maxDist=%d safeDepth=%d", scriptVersion, safePath(getDepositPrompt()), maxOrbDistance, safeDepth))
 basePos = resolveBasePosition() or basePos
 setAutoFarm(true)
