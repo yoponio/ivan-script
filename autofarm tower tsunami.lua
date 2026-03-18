@@ -1,17 +1,3 @@
-local gameLoaded = true
-pcall(function()
-	if type(game.IsLoaded) == "function" then
-		gameLoaded = game:IsLoaded()
-	end
-end)
-if not gameLoaded then
-	pcall(function()
-		if game.Loaded and type(game.Loaded.Wait) == "function" then
-			game.Loaded:Wait()
-		end
-	end)
-end
-
 local scriptVersion = "tower-tsunami-dedicated-r1"
 
 print("--- INICIANDO OSAKA " .. scriptVersion .. " (TOWER TSUNAMI DEDICADO) ---")
