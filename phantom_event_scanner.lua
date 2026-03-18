@@ -25,10 +25,14 @@ local movementConn = nil
 local loopThread = nil
 local watchPromptConn = nil
 local characterAddedConn = nil
+local orbAddedConn = nil
+local orbRemovingConn = nil
 local basePos = nil
 local depositPendingReset = false
 local lastDepositCount = 0
+local depositPendingSince = 0
 local orbBlacklist = {}
+local orbRegistry = {}
 
 local instantMove = true
 local flySpeed = 420
@@ -44,9 +48,14 @@ local postTouchCountPollDelay = 0.02
 local orbApproachHeight = -24
 local depositApproachHeight = 3.0
 local depositRetreatOffset = -30
+local depositDirectOffset = -8
+local depositPromptAttempts = 3
+local depositSuccessPolls = 6
+local depositSuccessPollDelay = 0.05
 local orbRetreatOffset = -18
 local remoteTouchAttempts = 2
 local orbBlacklistSeconds = 8
+local depositResetTimeout = 2.5
 local maxStoredLogs = 250
 
 local storedLogs = {}
@@ -59,6 +68,8 @@ local getCharacter
 local getHumanoid
 local getRoot
 local getDepositPrompt
+local registerOrbModel
+local unregisterOrbModel
 
 local function updateCopyLogsButton()
 	if copyLogsButton then
@@ -356,6 +367,57 @@ local function resolveOrbPart(model)
 	return nil
 end
 
+registerOrbModel = function(model)
+	if not safeIsA(model, "Model") or not isOrbModel(model) then
+		return
+	end
+	orbRegistry[safePath(model)] = model
+end
+
+unregisterOrbModel = function(model)
+	if not model then
+		return
+	end
+	orbRegistry[safePath(model)] = nil
+end
+
+local function rebuildOrbRegistry()
+	for path in pairs(orbRegistry) do
+		orbRegistry[path] = nil
+	end
+	local sources = {
+		workspace:FindFirstChild("PhantomEventParts"),
+		workspace:FindFirstChild("PhantomOrbParts"),
+		workspace,
+	}
+	for _, source in ipairs(sources) do
+		if source then
+			for _, descendant in ipairs(source:GetDescendants()) do
+				if safeIsA(descendant, "Model") then
+					registerOrbModel(descendant)
+				end
+			end
+		end
+	end
+end
+
+local function ensureOrbWatchers()
+	if orbAddedConn and orbRemovingConn then
+		return
+	end
+	rebuildOrbRegistry()
+	orbAddedConn = workspace.DescendantAdded:Connect(function(descendant)
+		if safeIsA(descendant, "Model") then
+			registerOrbModel(descendant)
+		end
+	end)
+	orbRemovingConn = workspace.DescendantRemoving:Connect(function(descendant)
+		if safeIsA(descendant, "Model") then
+			unregisterOrbModel(descendant)
+		end
+	end)
+end
+
 local function isBlacklisted(path)
 	local expiresAt = orbBlacklist[path]
 	if not expiresAt then
@@ -391,35 +453,23 @@ local function getNearestOrb()
 	if not root then
 		return nil
 	end
-	local sources = {
-		workspace:FindFirstChild("PhantomEventParts"),
-		workspace:FindFirstChild("PhantomOrbParts"),
-		workspace,
-	}
 	local bestModel = nil
 	local bestPart = nil
 	local bestDistance = math.huge
-	local scannedPaths = {}
-	for _, source in ipairs(sources) do
-		if source then
-			for _, descendant in ipairs(source:GetDescendants()) do
-				if safeIsA(descendant, "Model") and isOrbModel(descendant) then
-					local path = safePath(descendant)
-					if not scannedPaths[path] then
-						scannedPaths[path] = true
-						if not isBlacklisted(path) then
-							local part = resolveOrbPart(descendant)
-							if part then
-								local distance = (root.Position - part.Position).Magnitude
-								if distance < bestDistance then
-									bestDistance = distance
-									bestModel = descendant
-									bestPart = part
-								end
-							end
-						end
-					end
+	for path, model in pairs(orbRegistry) do
+		if typeof(model) ~= "Instance" or model.Parent == nil then
+			orbRegistry[path] = nil
+		elseif not isBlacklisted(path) then
+			local part = resolveOrbPart(model)
+			if part then
+				local distance = (root.Position - part.Position).Magnitude
+				if distance < bestDistance then
+					bestDistance = distance
+					bestModel = model
+					bestPart = part
 				end
+			else
+				orbRegistry[path] = nil
 			end
 		end
 	end
@@ -466,7 +516,15 @@ local function isDepositResetComplete()
 	if heldCount == 0 or heldCount < lastDepositCount then
 		depositPendingReset = false
 		lastDepositCount = 0
+		depositPendingSince = 0
 		debugLog("DEPOSIT_RESET", "contador actualizado")
+		return true
+	end
+	if depositPendingSince > 0 and (os.clock() - depositPendingSince) >= depositResetTimeout then
+		depositPendingReset = false
+		lastDepositCount = heldCount
+		depositPendingSince = 0
+		debugLog("DEPOSIT_TIMEOUT", string.format("held=%d sin refresh del prompt", heldCount))
 		return true
 	end
 	return false
@@ -507,6 +565,23 @@ local function firePrompt(prompt)
 		prompt:InputHoldEnd()
 	end)
 	return ok
+end
+
+local function waitForDepositSuccess(previousCount)
+	local lowestCount = previousCount or math.huge
+	local latestPrompt = nil
+	for _ = 1, depositSuccessPolls do
+		local heldCount, prompt = getHeldOrbCount()
+		latestPrompt = prompt or latestPrompt
+		if heldCount < lowestCount then
+			lowestCount = heldCount
+		end
+		if heldCount == 0 or heldCount < (previousCount or math.huge) then
+			return true, heldCount, latestPrompt
+		end
+		taskWait(depositSuccessPollDelay)
+	end
+	return false, lowestCount, latestPrompt
 end
 
 local function tryTouch(part)
@@ -562,23 +637,29 @@ local function depositOrbs()
 		debugLog("DEPOSIT_SKIP", string.format("held=%d target=%d", heldCount, depositTargetCount))
 		return false
 	end
-	local standCFrame = getPromptStandCFrame(prompt)
-	if standCFrame and not moveTo(standCFrame, flySpeed) then
-		return false
-	end
-	taskWait(settleTime)
-	local ok = firePrompt(prompt)
-	if ok then
-		depositPendingReset = true
-		lastDepositCount = heldCount
-		debugLog("DEPOSIT", string.format("held=%d path=%s action=%s", heldCount, safePath(prompt), safeText(prompt, "ActionText")))
-		local promptPosition = getModelPosition(prompt) or getModelPosition(prompt.Parent)
-		if promptPosition then
-			retreatUnderPosition(promptPosition, depositRetreatOffset)
+	local promptPosition = getModelPosition(prompt) or getModelPosition(prompt.Parent)
+	for attempt = 1, depositPromptAttempts do
+		local ok = firePrompt(prompt)
+		if ok then
+			local success, newCount = waitForDepositSuccess(heldCount)
+			if success then
+				depositPendingReset = true
+				lastDepositCount = heldCount
+				depositPendingSince = os.clock()
+				debugLog("DEPOSIT", string.format("held=%d path=%s action=%s try=%d newHeld=%d", heldCount, safePath(prompt), safeText(prompt, "ActionText"), attempt, newCount))
+				if promptPosition then
+					retreatUnderPosition(promptPosition, depositRetreatOffset)
+				end
+				return true
+			end
 		end
-		return true
+
+		if promptPosition then
+			snapTo(CFrame.new(promptPosition + Vector3.new(0, depositDirectOffset, 0)))
+			taskWait(settleTime)
+		end
 	end
-	debugLog("DEPOSIT_FAIL", "no se pudo activar prompt")
+	debugLog("DEPOSIT_FAIL", string.format("no se pudo activar prompt held=%d", heldCount))
 	return false
 end
 
@@ -649,9 +730,10 @@ local function setAutoFarm(state)
 	if autoFarm then
 		basePos = resolveBasePosition() or basePos
 		setStatus("Juntando orbes hasta 100 para depositar en Ghost Cannon")
+		ensureOrbWatchers()
 		startMovementAssist()
 		if not loopThread then
-			loopThread = task.spawn(mainLoop)
+			loopThread = taskSpawn(mainLoop)
 		end
 		debugLog("RUN", "autofarm phantom activado")
 	else
@@ -788,10 +870,19 @@ closeButton.MouseButton1Click:Connect(function()
 		watchPromptConn:Disconnect()
 		watchPromptConn = nil
 	end
+	if orbAddedConn then
+		orbAddedConn:Disconnect()
+		orbAddedConn = nil
+	end
+	if orbRemovingConn then
+		orbRemovingConn:Disconnect()
+		orbRemovingConn = nil
+	end
 	screenGui:Destroy()
 end)
 
 updateCopyLogsButton()
 debugLog("BOOT", "Ghost Cannon=" .. safePath(getDepositPrompt()))
 basePos = resolveBasePosition() or basePos
+ensureOrbWatchers()
 setAutoFarm(true)
