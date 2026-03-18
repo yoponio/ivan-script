@@ -215,6 +215,11 @@ local function scanStPatricEvent(status)
 		return
 	end
 
+	if status then
+		status.Text = "SCAN STP: BUSCANDO..."
+	end
+	debugLog("EVENT_SCAN_START", "st_patric workspace_scan")
+
 	local matches = {}
 	for _, descendant in ipairs(workspace:GetDescendants()) do
 		local reasons = {}
@@ -295,6 +300,23 @@ local function scanStPatricEvent(status)
 
 	if status then
 		status.Text = #matches > 0 and ("SCAN STP OK: " .. tostring(limit) .. "/" .. tostring(#matches)) or "SCAN STP: SIN HITS"
+	end
+end
+
+local function runStPatricScan(status)
+	if scriptClosed then
+		return
+	end
+
+	local ok, err = xpcall(function()
+		scanStPatricEvent(status)
+	end, debug.traceback)
+
+	if not ok then
+		debugLog("EVENT_SCAN_ERROR", tostring(err))
+		if status then
+			status.Text = "SCAN STP: ERROR"
+		end
 	end
 end
 
@@ -2292,7 +2314,14 @@ eventScanBtn.MouseButton1Click:Connect(function()
 	if scriptClosed then
 		return
 	end
-	scanStPatricEvent(status)
+	runStPatricScan(status)
+end)
+
+eventScanBtn.Activated:Connect(function()
+	if scriptClosed then
+		return
+	end
+	runStPatricScan(status)
 end)
 
 for _, name in ipairs(filterOrder) do
