@@ -282,6 +282,98 @@ local function safeInstancePath(instance)
 	return safeName(instance)
 end
 
+local function safeGuiVisible(instance)
+	if not instance then
+		return false
+	end
+
+	local current = instance
+	while current do
+		if safeIsA(current, "ScreenGui") then
+			local enabled = true
+			pcall(function()
+				enabled = current.Enabled
+			end)
+			if not enabled then
+				return false
+			end
+		elseif safeIsA(current, "GuiObject") then
+			local visible = true
+			pcall(function()
+				visible = current.Visible
+			end)
+			if not visible then
+				return false
+			end
+		end
+		current = safeParent(current)
+	end
+
+	return true
+end
+
+local function safeGuiArea(instance)
+	if not instance or not safeIsA(instance, "GuiObject") then
+		return 0
+	end
+
+	local area = 0
+	pcall(function()
+		area = instance.AbsoluteSize.X * instance.AbsoluteSize.Y
+	end)
+	return area
+end
+
+local function getGuiTextMatchScore(text)
+	if type(text) ~= "string" or text == "" then
+		return 0
+	end
+
+	local lowered = string.lower(text)
+	if lowered == "yes" or lowered == "yes!" then
+		return 14
+	end
+	if lowered == "confirm" or lowered == "confirm!" then
+		return 8
+	end
+	if lowered == "ok" or lowered == "okay" then
+		return 4
+	end
+	if lowered:find("yes", 1, true) then
+		return 10
+	end
+	if lowered:find("confirm", 1, true) then
+		return 6
+	end
+	return 0
+end
+
+local function getStPatricDialogContextScore(root)
+	if not root then
+		return 0
+	end
+
+	local score = 0
+	for _, descendant in ipairs(root:GetDescendants()) do
+		if safeIsA(descendant, "TextLabel") or safeIsA(descendant, "TextButton") then
+			local content = string.lower(safeText(descendant))
+			if content:find("submit brainrots", 1, true) then
+				score = score + 8
+			elseif content:find("build the rainbow", 1, true) then
+				score = score + 7
+			elseif content:find("brainrot", 1, true) then
+				score = score + 4
+			elseif content:find("gone forever", 1, true) then
+				score = score + 4
+			elseif content:find("rainbow", 1, true) or content:find("gold", 1, true) then
+				score = score + 3
+			end
+		end
+	end
+
+	return score
+end
+
 local function safePromptData(prompt)
 	local data = {
 		actionText = "",
@@ -2077,36 +2169,42 @@ local function findStPatricSubmitPrompt()
 end
 
 local function scoreYesButton(button)
-	if not button or not safeIsA(button, "TextButton") then
+	if not button or not safeIsA(button, "GuiButton") then
 		return 0
 	end
 
-	local text = string.lower(safeText(button))
-	if text ~= "yes" and text ~= "yes!" then
+	if not safeGuiVisible(button) then
 		return 0
 	end
 
-	local score = 8
+	local score = 0
+	local text = safeText(button)
+	local name = safeName(button)
+	local path = safeInstancePath(button)
+
+	score = score + getGuiTextMatchScore(text)
+	score = score + math.max(0, getGuiTextMatchScore(name) - 2)
+	score = score + math.max(0, getGuiTextMatchScore(path) - 4)
+
+	if score <= 0 then
+		return 0
+	end
+
+	if safeGuiArea(button) >= 1200 then
+		score = score + 2
+	end
+
 	local parent = safeParent(button)
-	for _ = 1, 3 do
+	for _ = 1, 4 do
 		if not parent then
 			break
 		end
-		for _, descendant in ipairs(parent:GetDescendants()) do
-			if safeIsA(descendant, "TextLabel") or safeIsA(descendant, "TextButton") then
-				local content = string.lower(safeText(descendant))
-				if content:find("submit brainrots", 1, true) then
-					score = score + 8
-				elseif content:find("build the rainbow", 1, true) then
-					score = score + 6
-				elseif content:find("brainrot", 1, true) then
-					score = score + 4
-				elseif content:find("gone forever", 1, true) then
-					score = score + 3
-				end
-			end
-		end
+		score = score + getStPatricDialogContextScore(parent)
 		parent = safeParent(parent)
+	end
+
+	if score < 12 then
+		return 0
 	end
 
 	return score
@@ -2121,7 +2219,7 @@ local function findStPatricYesButton()
 	local bestButton = nil
 	local bestScore = 0
 	for _, descendant in ipairs(playerGui:GetDescendants()) do
-		if safeIsA(descendant, "TextButton") then
+		if safeIsA(descendant, "GuiButton") then
 			local score = scoreYesButton(descendant)
 			if score > bestScore then
 				bestScore = score
