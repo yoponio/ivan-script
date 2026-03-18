@@ -20,7 +20,6 @@ local isGrabbing = false
 local returnLocked = false
 local scriptClosed = false
 local towerPriorityMode = false
-local eventShieldMode = false
 local godMode = false
 local manualMoveMode = false
 local isRespawning = false
@@ -50,16 +49,6 @@ local depositRetryCooldown = 0.75
 local depositSettleTime = 0.16
 local depositSafeConfirmAttempt = 2
 local towerMinLevel = 110
-local shieldSinkOffset = -2.35
-local shieldDamageThreshold = 6
-local shieldRetreatStep = 0.35
-local shieldRetreatMax = 3.8
-local shieldEmergencyStep = 0.8
-local shieldAutoHeal = true
-local shieldRecoverStep = 0.08
-local shieldRecoverInterval = 0.30
-local shieldRecoverDelayAfterHit = 0.80
-local shieldExitStabilizeTime = 0.18
 local godHealLogCooldown = 1.0
 local travelStepDistance = 120
 local travelStepDelay = 0.04
@@ -123,18 +112,11 @@ local seatedConn = nil
 local mainLoopThread = nil
 local mainButton = nil
 local towerButton = nil
-local shieldButton = nil
 local godButton = nil
 local manualMoveButton = nil
 local copyLogsButton = nil
 local clearLogsButton = nil
 local quietLogsButton = nil
-local shieldCFrame = nil
-local shieldBaseCFrame = nil
-local shieldRetreatOffset = 0
-local shieldLastHealth = nil
-local shieldLastDamageTime = 0
-local shieldLastRecoverTime = 0
 local characterPartStateBackup = {}
 local collisionModeLabel = "NORMAL"
 local baselineToolCounts = {}
@@ -551,9 +533,6 @@ local function getCompactStateLabel()
 	if manualMoveMode then
 		return "MANUAL"
 	end
-	if eventShieldMode then
-		return "SHIELD"
-	end
 	if isReturning or returnLocked then
 		return "RETURN"
 	end
@@ -639,7 +618,7 @@ local function logObservedInventoryChange(carryCount, toolCount)
 end
 
 local function logMonitorSnapshot(source, status)
-	if not (watchMode or autoPilot or isReturning or isGrabbing or eventShieldMode) then
+	if not (watchMode or autoPilot or isReturning or isGrabbing or manualMoveMode) then
 		return
 	end
 
@@ -701,15 +680,6 @@ local function updateTowerButtonState()
 	towerButton.Text = towerPriorityMode and ("LVL " .. tostring(towerMinLevel) .. "+") or "LVL ANY"
 	towerButton.BackgroundColor3 = towerPriorityMode and Color3.fromRGB(210, 145, 55) or Color3.fromRGB(35, 40, 45)
 	towerButton.TextColor3 = Color3.new(1, 1, 1)
-end
-
-local function updateShieldButtonState()
-	if scriptClosed or not shieldButton then
-		return
-	end
-	shieldButton.Text = eventShieldMode and "SHIELD ON" or "SHIELD OFF"
-	shieldButton.BackgroundColor3 = eventShieldMode and Color3.fromRGB(70, 130, 200) or Color3.fromRGB(35, 40, 45)
-	shieldButton.TextColor3 = Color3.new(1, 1, 1)
 end
 
 local function updateGodButtonState()
@@ -800,40 +770,6 @@ local function restoreCharacterCollisionState()
 	if mainButton then
 		updateButtonState(mainButton)
 	end
-end
-
-local function updateShieldCFrame()
-	if shieldBaseCFrame then
-		local basePos = shieldBaseCFrame.Position
-		local rotation = shieldBaseCFrame - basePos
-		shieldCFrame = CFrame.new(basePos + Vector3.new(0, shieldRetreatOffset, 0)) * rotation
-	else
-		shieldCFrame = nil
-	end
-end
-
-local function configureShieldHumanoid(humanoid, enabled)
-	if not humanoid then
-		return
-	end
-
-	pcall(function()
-		humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, not enabled)
-	end)
-	pcall(function()
-		humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, not enabled)
-	end)
-	pcall(function()
-		humanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, not enabled)
-	end)
-	pcall(function()
-		humanoid:SetStateEnabled(Enum.HumanoidStateType.Swimming, not enabled)
-	end)
-	pcall(function()
-		humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, not enabled)
-	end)
-
-	humanoid.PlatformStand = enabled
 end
 
 local function configureGodHumanoid(humanoid, enabled)
@@ -995,115 +931,6 @@ local function stepTravelTo(goal, runToken)
 	end
 end
 
-local function restoreFromShield()
-	local character = LP.Character
-	local root = getRoot()
-	local humanoid = getHumanoid()
-	if not root then
-		return
-	end
-
-	root.Anchored = true
-	if shieldBaseCFrame and character then
-		pcall(function()
-			character:PivotTo(shieldBaseCFrame)
-		end)
-	else
-		root.CFrame = CFrame.new(root.Position + Vector3.new(0, math.abs(shieldSinkOffset), 0))
-	end
-	root.AssemblyLinearVelocity = Vector3.zero
-	root.AssemblyAngularVelocity = Vector3.zero
-
-	if humanoid then
-		humanoid.PlatformStand = true
-	end
-
-	task.delay(shieldExitStabilizeTime, function()
-		if scriptClosed then
-			return
-		end
-		local delayedRoot = getRoot()
-		local delayedHumanoid = getHumanoid()
-		if delayedRoot then
-			delayedRoot.AssemblyLinearVelocity = Vector3.zero
-			delayedRoot.AssemblyAngularVelocity = Vector3.zero
-			delayedRoot.Anchored = false
-		end
-		if delayedHumanoid then
-			delayedHumanoid.PlatformStand = false
-			pcall(function()
-				delayedHumanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
-			end)
-			pcall(function()
-				delayedHumanoid:ChangeState(Enum.HumanoidStateType.Running)
-			end)
-		end
-	end)
-end
-
-local function setEventShieldMode(enabled, status)
-	local root = getRoot()
-	local humanoid = getHumanoid()
-
-	eventShieldMode = enabled
-	if enabled then
-		watchMode = false
-		autoPilot = false
-		isReturning = false
-		isGrabbing = false
-		returnLocked = false
-		currentTarget = nil
-		if root then
-			shieldBaseCFrame = root.CFrame
-			shieldRetreatOffset = shieldSinkOffset
-			shieldLastDamageTime = os.clock()
-			shieldLastRecoverTime = 0
-			updateShieldCFrame()
-			if shieldCFrame and root.Parent then
-				pcall(function()
-					root.Parent:PivotTo(shieldCFrame)
-				end)
-			end
-			root.AssemblyLinearVelocity = Vector3.zero
-			root.AssemblyAngularVelocity = Vector3.zero
-			root.Anchored = true
-		end
-		if humanoid then
-			shieldLastHealth = humanoid.Health
-			configureShieldHumanoid(humanoid, true)
-		end
-		if status then
-			status.Text = "SHIELD ACTIVO"
-		end
-	else
-		local previousShieldBase = shieldBaseCFrame
-		shieldBaseCFrame = nil
-		shieldCFrame = nil
-		shieldRetreatOffset = 0
-		shieldLastHealth = nil
-		shieldLastDamageTime = 0
-		shieldLastRecoverTime = 0
-		shieldBaseCFrame = previousShieldBase
-		restoreFromShield()
-		shieldBaseCFrame = nil
-		restoreCharacterCollisionState()
-		if humanoid then
-			configureShieldHumanoid(humanoid, false)
-			if godMode then
-				configureGodHumanoid(humanoid, true)
-			end
-		end
-		if status then
-			status.Text = "SHIELD OFF"
-		end
-	end
-
-	if mainButton then
-		updateButtonState(mainButton)
-	end
-	updateShieldButtonState()
-end
-
 local function removeFromCache(target)
 	for i = #targetCache, 1, -1 do
 		if targetCache[i] == target then
@@ -1115,35 +942,8 @@ end
 local function getTargetRarity(target)
 	local node = target
 	while node and node ~= workspace do
-		local resolved = resolveRarityName(node.Name)
-		if rarityPriority[resolved] then
-			return resolved
-		end
-		node = node.Parent
+		return false
 	end
-	return "Common"
-end
-
-local function getTargetPriority(target)
-	return rarityPriority[getTargetRarity(target)] or 0
-end
-
-local function parseLevelValue(value)
-	if type(value) == "number" then
-		return value
-	end
-	if type(value) == "string" then
-		return tonumber(string.match(value, "%d+"))
-	end
-	return nil
-end
-
-local function getTargetLevel(target)
-	if not target then
-		return 0
-	end
-
-	for _, attributeName in ipairs({"Level", "Lvl", "level", "lvl"}) do
 		local ok, value = pcall(function()
 			return target:GetAttribute(attributeName)
 		end)
@@ -1421,9 +1221,7 @@ local function releaseAutopilot(reason, status)
 	end
 
 	autoPilot = false
-	if not eventShieldMode then
-		restoreCharacterCollisionState()
-	end
+	restoreCharacterCollisionState()
 
 	local humanoid = getHumanoid()
 	if humanoid then
@@ -2503,7 +2301,6 @@ local function shutdownScript()
 	isReturning = false
 	isGrabbing = false
 	returnLocked = false
-	eventShieldMode = false
 	godMode = false
 	manualMoveMode = false
 	forceRescan = false
@@ -2518,12 +2315,6 @@ local function shutdownScript()
 	lastAutopilotOffLog = 0
 	startupReleaseTime = 0
 	firstTripPending = false
-	shieldCFrame = nil
-	shieldBaseCFrame = nil
-	shieldRetreatOffset = 0
-	shieldLastHealth = nil
-	shieldLastDamageTime = 0
-	shieldLastRecoverTime = 0
 	lastBrainrotSpawnLog = 0
 	pendingBrainrotSpawnCount = 0
 	pendingBrainrotSpawnSample = nil
@@ -2559,7 +2350,6 @@ local function shutdownScript()
 
 	mainButton = nil
 	towerButton = nil
-	shieldButton = nil
 	godButton = nil
 	manualMoveButton = nil
 	copyLogsButton = nil
@@ -2668,7 +2458,7 @@ godBtn.MouseButton1Click:Connect(function()
 		if godMode then
 			configureGodHumanoid(humanoid, true)
 			maintainGodMode(humanoid)
-		elseif not eventShieldMode then
+		else
 			configureGodHumanoid(humanoid, false)
 		end
 	end
@@ -2772,7 +2562,7 @@ steppedConn = RS.Stepped:Connect(function()
 		end
 	end
 
-	if not autoPilot and not eventShieldMode and not manualMoveMode then
+	if not autoPilot and not manualMoveMode then
 		local idleHumanoid = getHumanoid()
 		releaseTravelGodState(idleHumanoid)
 		return
@@ -2806,7 +2596,7 @@ steppedConn = RS.Stepped:Connect(function()
 	logObservedInventoryChange(observedCarryCount, observedToolCount)
 	logMonitorSnapshot("stepped", status)
 
-	if autoPilot and not eventShieldMode then
+	if autoPilot then
 		if not humanoid.PlatformStand then
 			lastPlatformInterferenceLog = logInterference(
 				"INTERFERE_PLATFORM",
@@ -2833,35 +2623,7 @@ steppedConn = RS.Stepped:Connect(function()
 		end
 	end
 
-	if eventShieldMode and shieldCFrame then
-		if humanoid then
-			if shieldLastHealth and humanoid.Health > 0 and humanoid.Health < shieldLastHealth then
-				local damageTaken = shieldLastHealth - humanoid.Health
-				local retreatAmount = damageTaken >= shieldDamageThreshold and shieldEmergencyStep or shieldRetreatStep
-				shieldRetreatOffset = math.max(shieldRetreatOffset - retreatAmount, -shieldRetreatMax)
-				shieldLastDamageTime = now
-				updateShieldCFrame()
-				if shieldAutoHeal then
-					pcall(function()
-						humanoid.Health = humanoid.MaxHealth
-					end)
-				end
-			elseif now - shieldLastDamageTime >= shieldRecoverDelayAfterHit
-				and now - shieldLastRecoverTime >= shieldRecoverInterval
-			then
-				shieldRetreatOffset = math.min(shieldRetreatOffset + shieldRecoverStep, shieldSinkOffset)
-				shieldLastRecoverTime = now
-				updateShieldCFrame()
-			end
-			shieldLastHealth = humanoid.Health
-			configureShieldHumanoid(humanoid, true)
-		end
-		pcall(function()
-			character:PivotTo(shieldCFrame)
-		end)
-	else
-		root.CFrame = flyValue.Value
-	end
+	root.CFrame = flyValue.Value
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
 
@@ -2920,7 +2682,7 @@ local function bindCharacter(btnRef, statusRef)
 			if scriptClosed then
 				return
 			end
-			if watchMode or autoPilot or isReturning or isGrabbing or eventShieldMode then
+			if watchMode or autoPilot or isReturning or isGrabbing or manualMoveMode then
 				debugLog(
 					"STATE_EVENT",
 					string.format(
@@ -3023,9 +2785,6 @@ btn.MouseButton1Click:Connect(function()
 	updateButtonState(btn)
 
 	if watchMode then
-		if eventShieldMode then
-			setEventShieldMode(false, status)
-		end
 		lastPlatformInterferenceLog = 0
 		lastAnchorInterferenceLog = 0
 		lastDesyncInterferenceLog = 0
@@ -3061,10 +2820,6 @@ mainLoopThread = task.spawn(function()
 		local ok, err = xpcall(function()
 			if scriptClosed then
 				return "break"
-			end
-
-			if eventShieldMode then
-				return
 			end
 
 			if not watchMode then
