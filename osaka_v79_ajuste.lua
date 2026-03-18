@@ -2,7 +2,7 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
-local scriptVersion = "v79.2-r8-final-polish"
+local scriptVersion = "v79.2-r9-stpatric-test"
 
 print("--- INICIANDO OSAKA " .. scriptVersion .. " (FREE SENTINEL FIX) ---")
 
@@ -91,6 +91,14 @@ local mainButton = nil
 local towerButton = nil
 local shieldButton = nil
 local copyLogsButton = nil
+local eventScanButton = nil
+local pendingEventScan = false
+local eventScanRunning = false
+local stPatricMode = false
+local stPatricCarryLimit = 6
+local stPatricSavedReturnAt = nil
+local stPatricLastSubmitAttempt = 0
+local stPatricSubmitCooldown = 1.25
 local shieldCFrame = nil
 local shieldBaseCFrame = nil
 local shieldRetreatOffset = 0
@@ -170,6 +178,347 @@ local filterOrder = {
 
 local function resolveRarityName(name)
 	return rarityAliases[name] or name
+end
+
+local stPatricKeywords = {
+	"st",
+	"patric",
+	"patrick",
+	"saint",
+	"clover",
+	"lepre",
+	"rainbow",
+	"luck",
+	"gold",
+	"coin",
+	"pot",
+	"cauld",
+	"olla",
+	"calder",
+	"deposit",
+	"deliver",
+	"turn in",
+	"submit",
+	"confirm",
+	"brainrot",
+	"bridge",
+	"build",
+	"gold",
+	"yes",
+}
+
+local function containsKeyword(text)
+	if type(text) ~= "string" or text == "" then
+		return false, nil
+	end
+
+	local lowered = string.lower(text)
+	for _, keyword in ipairs(stPatricKeywords) do
+		if lowered:find(keyword, 1, true) then
+			return true, keyword
+		end
+	end
+
+	return false, nil
+end
+
+local function safeInstancePath(instance)
+	if not instance then
+		return "nil"
+	end
+
+	local ok, fullName = pcall(function()
+		return instance:GetFullName()
+	end)
+	if ok and fullName and fullName ~= "" then
+		return fullName
+	end
+
+	local className = "Unknown"
+	pcall(function()
+		className = instance.ClassName
+	end)
+
+	local name = "Destroyed"
+	pcall(function()
+		name = instance.Name
+	end)
+
+	return className .. ":" .. name
+end
+
+local function safeClassName(instance)
+	if not instance then
+		return "Nil"
+	end
+
+	local className = "Unknown"
+	pcall(function()
+		className = instance.ClassName
+	end)
+	return className
+end
+
+local function safeName(instance)
+	if not instance then
+		return ""
+	end
+
+	local name = ""
+	pcall(function()
+		name = instance.Name
+	end)
+	return name or ""
+end
+
+local function safeText(instance)
+	if not instance then
+		return ""
+	end
+
+	local text = ""
+	pcall(function()
+		text = instance.Text
+	end)
+	return text or ""
+end
+
+local function safeParent(instance)
+	if not instance then
+		return nil
+	end
+
+	local parent = nil
+	pcall(function()
+		parent = instance.Parent
+	end)
+	return parent
+end
+
+local function safeIsDescendantOf(instance, ancestor)
+	if not instance or not ancestor then
+		return false
+	end
+
+	local result = false
+	pcall(function()
+		result = instance:IsDescendantOf(ancestor)
+	end)
+	return result
+end
+
+local function safeIsA(instance, className)
+	if not instance then
+		return false
+	end
+
+	local result = false
+	pcall(function()
+		result = instance:IsA(className)
+	end)
+	return result
+end
+
+local function safePromptData(prompt)
+	local data = {
+		actionText = "",
+		objectText = "",
+		enabled = false,
+		holdDuration = 0,
+		maxActivationDistance = 0,
+	}
+
+	if not prompt then
+		return data
+	end
+
+	pcall(function()
+		data.actionText = prompt.ActionText or ""
+	end)
+	pcall(function()
+		data.objectText = prompt.ObjectText or ""
+	end)
+	pcall(function()
+		data.enabled = prompt.Enabled
+	end)
+	pcall(function()
+		data.holdDuration = prompt.HoldDuration or 0
+	end)
+	pcall(function()
+		data.maxActivationDistance = prompt.MaxActivationDistance or 0
+	end)
+
+	return data
+end
+
+local function scanStPatricEvent(status)
+	if scriptClosed then
+		return
+	end
+
+	if status then
+		status.Text = "SCAN STP: BUSCANDO..."
+	end
+	debugLog("EVENT_SCAN_START", "st_patric workspace_scan")
+
+	local matches = {}
+	local scanRoots = {
+		{label = "workspace", root = workspace},
+		{label = "playergui", root = LP:FindFirstChildOfClass("PlayerGui")},
+	}
+
+	for _, scanRoot in ipairs(scanRoots) do
+		local rootInstance = scanRoot.root
+		if rootInstance then
+			local descendants = rootInstance:GetDescendants()
+			debugLog("EVENT_SCAN_INFO", scanRoot.label .. " descendants=" .. tostring(#descendants))
+			for index, descendant in ipairs(descendants) do
+				local reasons = {}
+		local score = 0
+
+				local matchedName, nameKeyword = containsKeyword(safeName(descendant))
+		if matchedName then
+			score = score + 2
+			table.insert(reasons, "name=" .. tostring(nameKeyword))
+		end
+
+				if safeIsA(descendant, "ProximityPrompt") then
+					local promptData = safePromptData(descendant)
+					local matchedAction, actionKeyword = containsKeyword(promptData.actionText)
+			if matchedAction then
+				score = score + 3
+				table.insert(reasons, "action=" .. tostring(actionKeyword))
+			end
+
+					local matchedObject, objectKeyword = containsKeyword(promptData.objectText)
+			if matchedObject then
+				score = score + 3
+				table.insert(reasons, "object=" .. tostring(objectKeyword))
+			end
+
+					local parent = safeParent(descendant)
+			if parent then
+						local matchedParent, parentKeyword = containsKeyword(safeName(parent))
+				if matchedParent then
+					score = score + 2
+					table.insert(reasons, "parent=" .. tostring(parentKeyword))
+				end
+			end
+		end
+
+				if safeIsA(descendant, "TextLabel") or safeIsA(descendant, "TextButton") then
+					local matchedText, textKeyword = containsKeyword(safeText(descendant))
+					if matchedText then
+						score = score + 3
+						table.insert(reasons, "text=" .. tostring(textKeyword))
+					end
+				end
+
+				if safeIsA(descendant, "ClickDetector") then
+					local parent = safeParent(descendant)
+					if parent then
+						local matchedParent, parentKeyword = containsKeyword(safeName(parent))
+						if matchedParent then
+							score = score + 2
+							table.insert(reasons, "click_parent=" .. tostring(parentKeyword))
+						end
+					end
+				end
+
+				if score > 0 then
+					table.insert(matches, {
+						node = descendant,
+						score = score,
+						reasons = table.concat(reasons, ","),
+					})
+				end
+
+				if index % 250 == 0 then
+					task.wait()
+					if scriptClosed then
+						return
+					end
+				end
+			end
+		end
+	end
+
+	table.sort(matches, function(a, b)
+		if a.score ~= b.score then
+			return a.score > b.score
+		end
+		return safeInstancePath(a.node) < safeInstancePath(b.node)
+	end)
+
+	debugLog("EVENT_SCAN", "st_patric matches=" .. tostring(#matches))
+	local limit = math.min(#matches, 20)
+	for index = 1, limit do
+		local entry = matches[index]
+		local node = entry.node
+		local line = string.format(
+			"#%d score=%d type=%s path=%s",
+			index,
+			entry.score,
+			safeClassName(node),
+			safeInstancePath(node)
+		)
+		if safeIsA(node, "ProximityPrompt") then
+			local promptData = safePromptData(node)
+			line = line .. string.format(
+				" action=%s object=%s enabled=%s hold=%.2f max=%.1f",
+				tostring(promptData.actionText),
+				tostring(promptData.objectText),
+				tostring(promptData.enabled),
+				promptData.holdDuration,
+				promptData.maxActivationDistance
+			)
+		end
+		if entry.reasons ~= "" then
+			line = line .. " reasons=" .. entry.reasons
+		end
+		debugLog("EVENT_SCAN_HIT", line)
+	end
+
+	if status then
+		status.Text = #matches > 0 and ("SCAN STP OK: " .. tostring(limit) .. "/" .. tostring(#matches)) or "SCAN STP: SIN HITS"
+	end
+end
+
+local function runStPatricScan(status)
+	if scriptClosed then
+		return
+	end
+
+	local ok, err = xpcall(function()
+		scanStPatricEvent(status)
+	end, debug.traceback)
+
+	if not ok then
+		debugLog("EVENT_SCAN_ERROR", tostring(err))
+		if status then
+			status.Text = "SCAN STP: ERROR"
+		end
+	end
+end
+
+local function queueStPatricScan(status)
+	if scriptClosed then
+		return
+	end
+
+	if eventScanRunning then
+		if status then
+			status.Text = "SCAN STP: YA CORRIENDO"
+		end
+		debugLog("EVENT_SCAN_BUSY", "scan already running")
+		return
+	end
+
+	pendingEventScan = true
+	if status then
+		status.Text = "SCAN STP: EN COLA"
+	end
+	debugLog("EVENT_SCAN_QUEUE", "queued")
 end
 
 local function updateCopyLogsButtonState()
@@ -423,6 +772,9 @@ local function getCompactStateLabel()
 	if scriptClosed then
 		return "CLOSED"
 	end
+	if stPatricMode then
+		return "STP"
+	end
 	if eventShieldMode then
 		return "SHIELD"
 	end
@@ -474,12 +826,21 @@ local function updateShieldButtonState()
 	shieldButton.TextColor3 = Color3.new(1, 1, 1)
 end
 
+local function updateStPatricButtonState()
+	if scriptClosed or not eventScanButton then
+		return
+	end
+	eventScanButton.Text = stPatricMode and "STP TEST ON" or "STP TEST OFF"
+	eventScanButton.BackgroundColor3 = stPatricMode and Color3.fromRGB(60, 135, 85) or Color3.fromRGB(70, 110, 70)
+	eventScanButton.TextColor3 = Color3.new(1, 1, 1)
+end
+
 local function updateButtonState(btn)
 	if scriptClosed then
 		return
 	end
 	btn.Text = "OSAKA | " .. getCompactStateLabel() .. " | " .. collisionModeLabel
-	btn.BackgroundColor3 = watchMode and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(180, 50, 50)
+	btn.BackgroundColor3 = (watchMode or stPatricMode) and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(180, 50, 50)
 end
 
 local function resetRunState()
@@ -1786,6 +2147,526 @@ local function returnToBase(status, reasonText, runToken)
 	return true
 end
 
+local function getStPatricTargets()
+	local results = {}
+	local brainrots = workspace:FindFirstChild("ActiveBrainrots")
+	local containers = {}
+
+	if brainrots then
+		table.insert(containers, brainrots)
+	else
+		table.insert(containers, workspace)
+	end
+
+	for _, container in ipairs(containers) do
+		for _, descendant in ipairs(container:GetDescendants()) do
+			if isBrainrotCandidate(descendant) and isValidTarget(descendant) and isPreferredLiveTarget(descendant) then
+				appendTargetIfValid(results, descendant)
+			end
+		end
+	end
+
+	table.sort(results, function(a, b)
+		local pa = getTargetPriority(a)
+		local pb = getTargetPriority(b)
+
+		if pa ~= pb then
+			return pa > pb
+		end
+
+		local root = getRoot()
+		if not root then
+			return safeInstancePath(a) < safeInstancePath(b)
+		end
+
+		local posa = getTargetPosition(a)
+		local posb = getTargetPosition(b)
+		if not posa then
+			return false
+		end
+		if not posb then
+			return true
+		end
+
+		return (root.Position - posa).Magnitude < (root.Position - posb).Magnitude
+	end)
+
+	return results
+end
+
+local function getStPatricTarget()
+	local targets = getStPatricTargets()
+	local target = targets[1]
+	if target and currentTarget ~= target then
+		debugOnce(
+			"STP_TARGET",
+			"pick -> " .. getTargetRarity(target) .. " | " .. safeInstancePath(target),
+			safeInstancePath(target)
+		)
+	end
+	return target, #targets
+end
+
+local function getWorldPositionFromInstance(instance)
+	if not instance then
+		return nil
+	end
+
+	if safeIsA(instance, "Attachment") then
+		local position = nil
+		pcall(function()
+			position = instance.WorldPosition
+		end)
+		return position
+	end
+
+	if safeIsA(instance, "BasePart") then
+		local position = nil
+		pcall(function()
+			position = instance.Position
+		end)
+		return position
+	end
+
+	if safeIsA(instance, "Model") then
+		local ok, pivot = pcall(function()
+			return instance:GetPivot()
+		end)
+		if ok and pivot then
+			return pivot.Position
+		end
+	end
+
+	local parent = safeParent(instance)
+		return parent and parent ~= instance and getWorldPositionFromInstance(parent) or nil
+end
+
+local function scoreStPatricPrompt(prompt)
+	if not prompt or not safeIsA(prompt, "ProximityPrompt") then
+		return 0
+	end
+
+	local activeBrainrots = workspace:FindFirstChild("ActiveBrainrots")
+	if activeBrainrots and safeIsDescendantOf(prompt, activeBrainrots) then
+		return 0
+	end
+
+	local promptData = safePromptData(prompt)
+	local parent = safeParent(prompt)
+	local texts = {
+		safeName(prompt),
+		safeInstancePath(prompt),
+		promptData.actionText,
+		promptData.objectText,
+		safeName(parent),
+		safeInstancePath(parent),
+	}
+	local score = 0
+
+	for _, text in ipairs(texts) do
+		local matched, keyword = containsKeyword(text)
+		if matched then
+			score = score + 2
+			if keyword == "submit" or keyword == "deliver" or keyword == "build" then
+				score = score + 4
+			elseif keyword == "pot" or keyword == "cauld" or keyword == "gold" or keyword == "rainbow" then
+				score = score + 3
+			end
+		end
+	end
+
+	return score
+end
+
+local function findStPatricSubmitPrompt()
+	local bestPrompt = nil
+	local bestScore = 0
+
+	for _, descendant in ipairs(workspace:GetDescendants()) do
+		if safeIsA(descendant, "ProximityPrompt") then
+			local score = scoreStPatricPrompt(descendant)
+			if score > bestScore then
+				bestScore = score
+				bestPrompt = descendant
+			end
+		end
+	end
+
+	if bestPrompt then
+		debugLog("STP_POT", "prompt=" .. safeInstancePath(bestPrompt) .. " score=" .. tostring(bestScore))
+	end
+
+	return bestPrompt, bestScore
+end
+
+local function scoreYesButton(button)
+	if not button or not safeIsA(button, "TextButton") then
+		return 0
+	end
+
+	local text = string.lower(safeText(button))
+	if text ~= "yes" and text ~= "yes!" then
+		return 0
+	end
+
+	local score = 8
+	local parent = safeParent(button)
+	for _ = 1, 3 do
+		if not parent then
+			break
+		end
+		for _, descendant in ipairs(parent:GetDescendants()) do
+			if safeIsA(descendant, "TextLabel") or safeIsA(descendant, "TextButton") then
+				local content = string.lower(safeText(descendant))
+				if content:find("submit brainrots", 1, true) then
+					score = score + 8
+				elseif content:find("build the rainbow", 1, true) then
+					score = score + 6
+				elseif content:find("brainrot", 1, true) then
+					score = score + 4
+				elseif content:find("gone forever", 1, true) then
+					score = score + 3
+				end
+			end
+		end
+		parent = safeParent(parent)
+	end
+
+	return score
+end
+
+local function findStPatricYesButton()
+	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
+	if not playerGui then
+		return nil, 0
+	end
+
+	local bestButton = nil
+	local bestScore = 0
+	for _, descendant in ipairs(playerGui:GetDescendants()) do
+		if safeIsA(descendant, "TextButton") then
+			local score = scoreYesButton(descendant)
+			if score > bestScore then
+				bestScore = score
+				bestButton = descendant
+			end
+		end
+	end
+
+	return bestButton, bestScore
+end
+
+local function activateStPatricYesButton(button)
+	if not button then
+		return false
+	end
+
+	pcall(function()
+		button.Active = true
+	end)
+	pcall(function()
+		button.Interactable = true
+	end)
+
+	local activated = pcall(function()
+		button:Activate()
+	end)
+
+	if type(firesignal) == "function" then
+		local signalOk = pcall(function()
+			firesignal(button.MouseButton1Click)
+		end)
+		activated = activated or signalOk
+
+		signalOk = pcall(function()
+			firesignal(button.Activated, nil, 1)
+		end)
+		activated = activated or signalOk
+	end
+
+	return activated
+end
+
+local function confirmStPatricDialog(status)
+	local deadline = os.clock() + 3.5
+	while os.clock() < deadline do
+		if scriptClosed then
+			return false
+		end
+
+		local yesButton, score = findStPatricYesButton()
+		if yesButton then
+			local ok = activateStPatricYesButton(yesButton)
+			debugLog("STP_CONFIRM", "button=" .. safeInstancePath(yesButton) .. " score=" .. tostring(score) .. " ok=" .. tostring(ok))
+			if status then
+				status.Text = ok and "STP: CONFIRMANDO..." or "STP: YES DETECTADO"
+			end
+			return ok
+		end
+
+		task.wait(0.1)
+	end
+
+	debugLog("STP_CONFIRM_FAIL", "yes button no detectado")
+	return false
+end
+
+local function submitStPatricLoad(status, runToken)
+	if runToken ~= nil and not isOperationValid(runToken) then
+		debugLog("STP_SUBMIT_ABORT", "operacion invalidada antes de entregar")
+		return false
+	end
+	if os.clock() - stPatricLastSubmitAttempt < stPatricSubmitCooldown then
+		releaseAutopilot("STP: ESPERANDO OLLA...", status)
+		return false
+	end
+
+	local carryCount = getEffectiveCarryCount()
+	if carryCount <= 0 then
+		return false
+	end
+
+	stPatricLastSubmitAttempt = os.clock()
+	isReturning = true
+	returnLocked = true
+	if mainButton then
+		updateButtonState(mainButton)
+	end
+
+	if not engageAutopilot("STP: LLEVANDO A OLLA...", status) then
+		isReturning = false
+		return false
+	end
+
+	local prompt, promptScore = findStPatricSubmitPrompt()
+	if not prompt or promptScore <= 0 then
+		debugLog("STP_SUBMIT_FAIL", "sin prompt de olla")
+		releaseAutopilot("STP: OLLA NO ENCONTRADA", status)
+		isReturning = false
+		return false
+	end
+
+	local promptPos = getWorldPositionFromInstance(prompt)
+	if promptPos then
+		local root = getRoot()
+		if root and (root.Position - promptPos).Magnitude > 10 then
+			ghostTravel(promptPos, nil, nil, runToken)
+		end
+	end
+
+	pcall(function()
+		prompt.RequiresLineOfSight = false
+		prompt.MaxActivationDistance = 100
+		prompt.HoldDuration = 0
+	end)
+
+	local toolsBefore = getFarmToolCount()
+	for attempt = 1, 3 do
+		if runToken ~= nil and not isOperationValid(runToken) then
+			debugLog("STP_SUBMIT_ABORT", "operacion invalidada durante entrega")
+			isReturning = false
+			return false
+		end
+
+		local fireOk, fireErr = pcall(function()
+			fireproximityprompt(prompt)
+		end)
+		debugLog("STP_SUBMIT_TRIGGER", "prompt=" .. safeInstancePath(prompt) .. " ok=" .. tostring(fireOk) .. (fireErr and (" err=" .. tostring(fireErr)) or "") .. " attempt=" .. tostring(attempt))
+
+		task.wait(0.2)
+		confirmStPatricDialog(status)
+
+		local deadline = os.clock() + 2.5
+		while os.clock() < deadline do
+			local toolsNow = getFarmToolCount()
+			local carryNow = getEffectiveCarryCount()
+			if toolsNow < toolsBefore or carryNow <= 0 then
+				captureBaselineTools()
+				invCount = 0
+				grabAttempts = 0
+				currentTarget = nil
+				blacklist = {}
+				returnLocked = false
+				isReturning = false
+				refreshTargets(true)
+				status.Text = "STP: ENTREGA OK"
+				debugLog("STP_SUBMIT_OK", "carry_before=" .. tostring(carryCount) .. " tools_before=" .. tostring(toolsBefore) .. " tools_now=" .. tostring(toolsNow))
+				releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
+				return true
+			end
+			task.wait(0.1)
+		end
+	end
+
+	debugLog("STP_SUBMIT_FAIL", "sin confirmacion de entrega")
+	isReturning = false
+	releaseAutopilot("STP: ENTREGA FALLIDA", status)
+	return false
+end
+
+local function setStPatricMode(enabled, status)
+	if scriptClosed or stPatricMode == enabled then
+		return
+	end
+
+	stPatricMode = enabled
+	invalidateRunToken(enabled and "stPatricOn" or "stPatricOff")
+	autoPilot = false
+	isReturning = false
+	isGrabbing = false
+	returnLocked = false
+	currentTarget = nil
+	grabAttempts = 0
+	blacklist = {}
+	targetCache = {}
+	forceRescan = true
+	lastDepositAttempt = 0
+	stPatricLastSubmitAttempt = 0
+
+	if enabled then
+		if eventShieldMode then
+			setEventShieldMode(false, status)
+		end
+		watchMode = false
+		stPatricSavedReturnAt = returnAt
+		returnAt = stPatricCarryLimit
+		local root = getRoot()
+		if root then
+			basePos = root.Position
+			flyValue.Value = root.CFrame
+			root.Anchored = false
+		end
+		captureBaselineTools()
+		invCount = syncInventoryCountFromTools()
+		if status then
+			status.Text = "STP TEST ACTIVO"
+		end
+		debugLog("STP_MODE", "enabled carryLimit=" .. tostring(stPatricCarryLimit))
+	else
+		if stPatricSavedReturnAt then
+			returnAt = stPatricSavedReturnAt
+			stPatricSavedReturnAt = nil
+		end
+		invCount = syncInventoryCountFromTools()
+		releaseAutopilot("ESTADO: ESPERANDO", status)
+		if status then
+			status.Text = "STP TEST OFF"
+		end
+		debugLog("STP_MODE", "disabled")
+	end
+
+	updateReturnLimit()
+	updateStPatricButtonState()
+	if mainButton then
+		updateButtonState(mainButton)
+	end
+end
+
+local function runStPatricCycle(status)
+	local runToken = activeRunToken
+	local humanoid = getHumanoid()
+	local root = getRoot()
+	if not humanoid or not root or humanoid.Health <= 0 then
+		return
+	end
+
+	updateReturnLimit()
+	local carryCount = getEffectiveCarryCount()
+	if (returnLocked or carryCount >= stPatricCarryLimit) and not isReturning then
+		returnLocked = true
+		submitStPatricLoad(status, runToken)
+		return
+	end
+
+	local target, availableCount = getStPatricTarget()
+	if not target then
+		debugOnce(
+			"STP_NO_TARGET",
+			"carry=" .. tostring(carryCount) .. " available=0",
+			"stp:" .. tostring(carryCount)
+		)
+		currentTarget = nil
+		releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
+		return
+	end
+
+	currentTarget = target
+	if not engageAutopilot("STP OBJETIVOS: " .. tostring(availableCount) .. " | " .. tostring(carryCount) .. "/" .. tostring(stPatricCarryLimit), status) then
+		return
+	end
+
+	local targetPos = getTargetPosition(target)
+	if not targetPos then
+		blacklist[target] = true
+		currentTarget = nil
+		removeFromCache(target)
+		return
+	end
+
+	local dist = (root.Position - targetPos).Magnitude
+	if dist > 8 then
+		status.Text = "STP: " .. getTargetRarity(target)
+		ghostTravel(targetPos, nil, nil, runToken)
+	end
+
+	root = getRoot()
+	targetPos = getTargetPosition(target)
+	local postTravelDistance = math.huge
+	if root and targetPos then
+		postTravelDistance = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(targetPos.X, 0, targetPos.Z)).Magnitude
+	end
+	if postTravelDistance > 10 then
+		debugLog("STP_GRAB_ABORT", string.format("demasiado lejos=%.2f", postTravelDistance))
+		currentTarget = nil
+		return
+	end
+
+	if not isValidTarget(target) then
+		currentTarget = nil
+		removeFromCache(target)
+		return
+	end
+
+	local success = grabItem(target, runToken)
+	if success then
+		firstTripPending = false
+		invCount = invCount + 1
+		sessionGrabCount = sessionGrabCount + 1
+		local syncedCount = syncInventoryCountFromTools()
+		if syncedCount > 0 then
+			invCount = math.max(invCount, syncedCount)
+		end
+		debugLog("STP_GRAB_OK", "inv=" .. tostring(invCount) .. " total=" .. tostring(sessionGrabCount) .. " rarity=" .. getTargetRarity(target))
+		if invCount >= stPatricCarryLimit then
+			returnLocked = true
+		end
+		grabAttempts = 0
+		blacklist[target] = true
+		currentTarget = nil
+		removeFromCache(target)
+		refreshTargets(true)
+		status.Text = "STP: " .. tostring(invCount) .. "/" .. tostring(stPatricCarryLimit)
+
+		if returnLocked or invCount >= stPatricCarryLimit then
+			submitStPatricLoad(status, runToken)
+		else
+			task.wait(0.12)
+		end
+	else
+		grabAttempts = grabAttempts + 1
+		debugLog("STP_GRAB_FAIL", "intento=" .. tostring(grabAttempts))
+		status.Text = "STP FAIL " .. tostring(grabAttempts) .. "/3"
+		if grabAttempts >= 3 then
+			blacklist[target] = true
+			currentTarget = nil
+			grabAttempts = 0
+			removeFromCache(target)
+			refreshTargets(true)
+			task.wait(0.1)
+		end
+	end
+end
+
 local function bindBrainrotWatcher()
 	if brainrotAddedConn then
 		brainrotAddedConn:Disconnect()
@@ -1973,6 +2854,18 @@ copyLogsBtn.BorderSizePixel = 0
 Instance.new("UICorner", copyLogsBtn)
 copyLogsButton = copyLogsBtn
 
+local eventScanBtn = Instance.new("TextButton", panel)
+eventScanBtn.Size = UDim2.new(1, 0, 0, 24)
+eventScanBtn.Position = UDim2.new(0, 0, 0, 142)
+eventScanBtn.Text = "STP TEST OFF"
+eventScanBtn.TextColor3 = Color3.new(1, 1, 1)
+eventScanBtn.BackgroundColor3 = Color3.fromRGB(70, 110, 70)
+eventScanBtn.Font = Enum.Font.GothamBold
+eventScanBtn.TextSize = 11
+eventScanBtn.BorderSizePixel = 0
+Instance.new("UICorner", eventScanBtn)
+eventScanButton = eventScanBtn
+
 local scroll = Instance.new("ScrollingFrame", frame)
 scroll.Size = UDim2.new(1, -12, 0, 146)
 scroll.Position = UDim2.new(0, 6, 0, 184)
@@ -2054,6 +2947,7 @@ local function shutdownScript()
 	towerButton = nil
 	shieldButton = nil
 	copyLogsButton = nil
+	eventScanButton = nil
 
 	if sg then
 		sg:Destroy()
@@ -2073,9 +2967,9 @@ local function applyLayout()
 	if not expanded then
 		frame.Size = UDim2.new(0, 172, 0, 38)
 	elseif filtersExpanded then
-		frame.Size = UDim2.new(0, 172, 0, 336)
+		frame.Size = UDim2.new(0, 172, 0, 364)
 	else
-		frame.Size = UDim2.new(0, 172, 0, 184)
+		frame.Size = UDim2.new(0, 172, 0, 212)
 	end
 
 	scroll.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 8)
@@ -2083,6 +2977,10 @@ end
 
 local function updateReturnLimit(delta)
 	if scriptClosed then
+		return
+	end
+	if stPatricMode then
+		limitValue.Text = tostring(stPatricCarryLimit)
 		return
 	end
 	if delta then
@@ -2149,6 +3047,20 @@ copyLogsBtn.MouseButton1Click:Connect(function()
 	updateCopyLogsButtonState()
 end)
 
+eventScanBtn.MouseButton1Click:Connect(function()
+	if scriptClosed then
+		return
+	end
+	setStPatricMode(not stPatricMode, status)
+end)
+
+eventScanBtn.Activated:Connect(function()
+	if scriptClosed then
+		return
+	end
+	setStPatricMode(not stPatricMode, status)
+end)
+
 for _, name in ipairs(filterOrder) do
 	local filterButton = Instance.new("TextButton", scroll)
 	filterButton.Size = UDim2.new(1, 0, 0, 24)
@@ -2174,6 +3086,7 @@ applyLayout()
 updateReturnLimit()
 updateTowerButtonState()
 updateShieldButtonState()
+updateStPatricButtonState()
 updateCopyLogsButtonState()
 
 steppedConn = RS.Stepped:Connect(function()
@@ -2305,6 +3218,11 @@ btn.MouseButton1Click:Connect(function()
 	if scriptClosed then
 		return
 	end
+	if stPatricMode then
+		status.Text = "STP TEST ACTIVO"
+		updateButtonState(btn)
+		return
+	end
 
 	local character = getCharacter()
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -2363,6 +3281,20 @@ mainLoopThread = task.spawn(function()
 		local ok, err = xpcall(function()
 			if scriptClosed then
 				return "break"
+			end
+
+			if pendingEventScan and not eventScanRunning then
+				pendingEventScan = false
+				eventScanRunning = true
+				task.spawn(function()
+					runStPatricScan(status)
+					eventScanRunning = false
+				end)
+			end
+
+			if stPatricMode then
+				runStPatricCycle(status)
+				return
 			end
 
 			if eventShieldMode then
