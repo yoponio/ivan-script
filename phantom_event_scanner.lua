@@ -13,6 +13,7 @@ local watchEnabled = false
 local watchConnections = {}
 local storedLogs = {}
 local trackedPaths = {}
+local scanBatchSize = 200
 
 local statusLabel
 local logBox
@@ -65,6 +66,19 @@ local allowedClasses = {
 	Highlight = true,
 }
 
+local ignoredPathFragments = {
+	"SpinWheels.Phantom",
+	"ActiveBrainrots.",
+	"Workspace.Debris.BillboardTemplate",
+	"LuckyBlockRig_",
+	"GameObjects.Enemies.",
+	"TimerGui",
+	"TakePrompt",
+	"TradePrompt",
+	"GenRateOverhead",
+	"SurfaceGui.Frame.Mutation",
+}
+
 local function safeIsA(instance, className)
 	local ok, result = pcall(function()
 		return instance and instance:IsA(className)
@@ -75,6 +89,12 @@ end
 local function clearArray(list)
 	for index = #list, 1, -1 do
 		list[index] = nil
+	end
+end
+
+local function yieldIfNeeded(index)
+	if index % scanBatchSize == 0 then
+		task.wait()
 	end
 end
 
@@ -258,6 +278,18 @@ local function scoreInstance(instance)
 	return score, hits
 end
 
+local function shouldIgnorePath(path)
+	if type(path) ~= "string" or path == "" then
+		return false
+	end
+	for _, fragment in ipairs(ignoredPathFragments) do
+		if path:find(fragment, 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
 local function isNearPlayer(instance)
 	local root = getRoot()
 	if not root then
@@ -276,8 +308,21 @@ local function shouldTrackInstance(instance)
 	if not allowedClasses[className] then
 		return false, 0, "", nil
 	end
+	local path = safePath(instance)
+	if shouldIgnorePath(path) then
+		return false, 0, "", nil
+	end
 	local score, hits = scoreInstance(instance)
 	local nearOk, distance = isNearPlayer(instance)
+	if path:find("PhantomOrbParts", 1, true) then
+		score = score + 12
+	end
+	if path:find("PhantomCoinParts", 1, true) then
+		score = score + 10
+	end
+	if path:find("Boat", 1, true) or path:find("Ship", 1, true) or path:find("Dock", 1, true) then
+		score = score + 20
+	end
 	if nearOk then
 		score = score + 6
 	end
@@ -324,7 +369,10 @@ local function scanNearbyWorld()
 	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
 	if playerGui then
 		for index, descendant in ipairs(playerGui:GetDescendants()) do
-			logInstance("GUI", descendant)
+			local path = safePath(descendant)
+			if not shouldIgnorePath(path) then
+				logInstance("GUI", descendant)
+			end
 			yieldIfNeeded(index)
 		end
 	end
@@ -341,13 +389,16 @@ local function scanNearestPrompts()
 	local prompts = {}
 	for index, descendant in ipairs(workspace:GetDescendants()) do
 		if safeIsA(descendant, "ProximityPrompt") then
-			local position = getWorldPosition(descendant) or getWorldPosition(descendant.Parent)
-			if position then
-				table.insert(prompts, {
-					instance = descendant,
-					distance = (root.Position - position).Magnitude,
-					position = position,
-				})
+			local path = safePath(descendant)
+			if not shouldIgnorePath(path) then
+				local position = getWorldPosition(descendant) or getWorldPosition(descendant.Parent)
+				if position then
+					table.insert(prompts, {
+						instance = descendant,
+						distance = (root.Position - position).Magnitude,
+						position = position,
+					})
+				end
 			end
 		end
 		yieldIfNeeded(index)
