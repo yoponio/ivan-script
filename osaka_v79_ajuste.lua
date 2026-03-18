@@ -2,7 +2,7 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
-local scriptVersion = "v79.2-r5-limit-total"
+local scriptVersion = "v79.2-r6-watchoff-guard"
 
 print("--- INICIANDO OSAKA " .. scriptVersion .. " (FREE SENTINEL FIX) ---")
 
@@ -2195,6 +2195,22 @@ btn.MouseButton1Click:Connect(function()
 	end
 
 	updateReturnLimit()
+	if watchMode and (autoPilot or isReturning or isGrabbing) then
+		debugLog(
+			"WATCH_OFF_BLOCKED",
+			string.format(
+				"state=%s autoPilot=%s returning=%s grabbing=%s target=%s",
+				getCompactStateLabel(),
+				tostring(autoPilot),
+				tostring(isReturning),
+				tostring(isGrabbing),
+				currentTarget and currentTarget:GetFullName() or "nil"
+			)
+		)
+		status.Text = "BLOQUEADO: AUTOFARM EN CURSO"
+		updateButtonState(btn)
+		return
+	end
 	watchMode = not watchMode
 	updateButtonState(btn)
 
