@@ -63,6 +63,7 @@ local stPatricRepromptDelay = 0.35
 local stPatricHoldSnapDistance = 3.5
 local stPatricImmediateRepromptDelay = 0.18
 local stPatricConfirmTimeout = 1.6
+local stPatricAssumeSubmitDelay = 0.45
 
 local invCount = 0
 local basePos = nil
@@ -2656,6 +2657,7 @@ local function submitStPatricLoad(status, runToken)
 		local drainedConfirmations = 0
 		local repromptDone = false
 		local repromptAt = os.clock() + (confirmOk and 0.25 or stPatricRepromptDelay)
+		local assumeSuccessAt = math.huge
 
 		local deadline = os.clock() + (confirmOk and stPatricConfirmedDrainWindow or stPatricUnconfirmedDrainWindow)
 		while os.clock() < deadline do
@@ -2687,6 +2689,7 @@ local function submitStPatricLoad(status, runToken)
 				end)
 				debugLog("STP_SUBMIT_RETRY", "prompt=" .. safeInstancePath(prompt) .. " ok=" .. tostring(retryOk) .. (retryErr and (" err=" .. tostring(retryErr)) or ""))
 				repromptDone = true
+				assumeSuccessAt = os.clock() + stPatricAssumeSubmitDelay
 			end
 			if carryDrained and not dialogVisible then
 				drainedConfirmations = drainedConfirmations + 1
@@ -2704,6 +2707,21 @@ local function submitStPatricLoad(status, runToken)
 				refreshTargets(true)
 				status.Text = "STP: ENTREGA OK"
 				debugLog("STP_SUBMIT_OK", "carry_before=" .. tostring(carryCount) .. " tools_before=" .. tostring(toolsBefore) .. " tools_now=" .. tostring(toolsNow) .. " dialog_score=" .. tostring(dialogScore) .. " dialog_path=" .. tostring(dialogPath or "none"))
+				descendAfterStPatricSubmit(runToken)
+				releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
+				return true
+			end
+			if confirmOk and repromptDone and not dialogVisible and os.clock() >= assumeSuccessAt then
+				captureBaselineTools()
+				invCount = 0
+				grabAttempts = 0
+				currentTarget = nil
+				blacklist = {}
+				returnLocked = false
+				isReturning = false
+				refreshTargets(true)
+				status.Text = "STP: ENTREGA OK"
+				debugLog("STP_SUBMIT_ASSUME_OK", "carry_before=" .. tostring(carryCount) .. " tools_before=" .. tostring(toolsBefore) .. " tools_now=" .. tostring(toolsNow) .. " dialog_score=" .. tostring(dialogScore) .. " dialog_path=" .. tostring(dialogPath or "none"))
 				descendAfterStPatricSubmit(runToken)
 				releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
 				return true
