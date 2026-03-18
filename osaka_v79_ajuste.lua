@@ -374,6 +374,81 @@ local function getStPatricDialogContextScore(root)
 	return score
 end
 
+local function getStPatricYesDebugCandidates(limit)
+	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
+	if not playerGui then
+		return "sin PlayerGui"
+	end
+
+	local candidates = {}
+	for _, descendant in ipairs(playerGui:GetDescendants()) do
+		if safeIsA(descendant, "GuiButton") then
+			local text = safeText(descendant)
+			local name = safeName(descendant)
+			local path = safeInstancePath(descendant)
+			local visible = safeGuiVisible(descendant)
+			local strictScore = scoreYesButton(descendant)
+			local looseScore = getGuiTextMatchScore(text)
+				+ math.max(0, getGuiTextMatchScore(name) - 2)
+				+ math.max(0, getGuiTextMatchScore(path) - 4)
+
+			if strictScore > 0 or looseScore > 0 then
+				table.insert(candidates, {
+					button = descendant,
+					strictScore = strictScore,
+					looseScore = looseScore,
+					visible = visible,
+					area = safeGuiArea(descendant),
+					text = text,
+					name = name,
+					path = path,
+				})
+			end
+		end
+	end
+
+	table.sort(candidates, function(a, b)
+		if a.strictScore ~= b.strictScore then
+			return a.strictScore > b.strictScore
+		end
+		if a.looseScore ~= b.looseScore then
+			return a.looseScore > b.looseScore
+		end
+		if a.visible ~= b.visible then
+			return a.visible
+		end
+		if a.area ~= b.area then
+			return a.area > b.area
+		end
+		return a.path < b.path
+	end)
+
+	if #candidates == 0 then
+		return "sin candidatos GuiButton"
+	end
+
+	local parts = {}
+	for i = 1, math.min(limit or 3, #candidates) do
+		local entry = candidates[i]
+		table.insert(
+			parts,
+			string.format(
+				"#%d strict=%d loose=%d visible=%s area=%d text=%s name=%s path=%s",
+				i,
+				entry.strictScore,
+				entry.looseScore,
+				tostring(entry.visible),
+				entry.area,
+				tostring(entry.text),
+				tostring(entry.name),
+				tostring(entry.path)
+			)
+		)
+	end
+
+	return table.concat(parts, " || ")
+end
+
 local function safePromptData(prompt)
 	local data = {
 		actionText = "",
@@ -2283,6 +2358,7 @@ local function confirmStPatricDialog(status)
 	end
 
 	debugLog("STP_CONFIRM_FAIL", "yes button no detectado")
+	debugLog("STP_CONFIRM_CANDIDATES", getStPatricYesDebugCandidates(5))
 	return false
 end
 
