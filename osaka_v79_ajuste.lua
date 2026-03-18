@@ -2,9 +2,9 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
-local scriptVersion = "stpatric-dedicated-r1"
+local scriptVersion = "v79.2-r8-final-polish"
 
-print("--- INICIANDO OSAKA " .. scriptVersion .. " (ST PATRIC DEDICADO) ---")
+print("--- INICIANDO OSAKA " .. scriptVersion .. " (FREE SENTINEL FIX) ---")
 
 local Players = game:GetService("Players")
 local TS = game:GetService("TweenService")
@@ -21,13 +21,14 @@ local scriptClosed = false
 local towerPriorityMode = false
 local eventShieldMode = false
 local isRespawning = false
+local quietLogMode = true
 
 local farmSpeed = 500
 local firstTripSpeed = 220
 local startupStabilizeTime = 0.45
 local safeDepth = -6.5
 local depositRise = 0.08
-local returnAt = 6
+local returnAt = 2
 local returnApproachDepth = -8.5
 local returnSettleDepth = -4.0
 local returnHoverDepth = -1.6
@@ -50,8 +51,6 @@ local shieldRecoverStep = 0.08
 local shieldRecoverInterval = 0.30
 local shieldRecoverDelayAfterHit = 0.80
 local shieldExitStabilizeTime = 0.18
-local stPatricSubmitCooldown = 1.25
-local stPatricLastSubmitAttempt = 0
 
 local invCount = 0
 local basePos = nil
@@ -81,6 +80,17 @@ local lastScanHint = ""
 local startupReleaseTime = 0
 local firstTripPending = false
 local activeRunToken = 0
+local monitorLogInterval = 2.0
+local lastMonitorLog = 0
+local lastObservedCarryCount = -1
+local lastObservedToolCount = -1
+local autopilotOffLogCooldown = 1.0
+local lastAutopilotOffReason = nil
+local lastAutopilotOffLog = 0
+local interferenceLogCooldown = 0.75
+local lastPlatformInterferenceLog = 0
+local lastAnchorInterferenceLog = 0
+local lastDesyncInterferenceLog = 0
 
 local flyValue = Instance.new("CFrameValue")
 
@@ -88,11 +98,16 @@ local diedConn = nil
 local charAddedConn = nil
 local brainrotAddedConn = nil
 local steppedConn = nil
+local healthChangedConn = nil
+local stateChangedConn = nil
+local seatedConn = nil
 local mainLoopThread = nil
 local mainButton = nil
 local towerButton = nil
 local shieldButton = nil
 local copyLogsButton = nil
+local clearLogsButton = nil
+local quietLogsButton = nil
 local shieldCFrame = nil
 local shieldBaseCFrame = nil
 local shieldRetreatOffset = 0
@@ -108,14 +123,14 @@ local getHumanoid
 local getRoot
 
 local filtros = {
-	["Common"] = true,
-	["Uncommon"] = true,
-	["Rare"] = true,
-	["Epic"] = true,
-	["Legendary"] = true,
-	["Mythic"] = true,
-	["Cosmic"] = true,
-	["Secret"] = true,
+	["Common"] = false,
+	["Uncommon"] = false,
+	["Rare"] = false,
+	["Epic"] = false,
+	["Legendary"] = false,
+	["Mythic"] = false,
+	["Cosmic"] = false,
+	["Secret"] = false,
 	["Divine"] = true,
 	["Celestial"] = true,
 	["Infinite"] = true,
@@ -174,313 +189,6 @@ local function resolveRarityName(name)
 	return rarityAliases[name] or name
 end
 
-local stPatricKeywords = {
-	"st",
-	"patric",
-	"patrick",
-	"saint",
-	"clover",
-	"rainbow",
-	"gold",
-	"pot",
-	"cauld",
-	"olla",
-	"submit",
-	"deliver",
-	"build",
-	"brainrot",
-	"yes",
-}
-
-local function containsKeyword(text)
-	if type(text) ~= "string" or text == "" then
-		return false, nil
-	end
-
-	local lowered = string.lower(text)
-	for _, keyword in ipairs(stPatricKeywords) do
-		if lowered:find(keyword, 1, true) then
-			return true, keyword
-		end
-	end
-
-	return false, nil
-end
-
-local function safeName(instance)
-	if not instance then
-		return ""
-	end
-
-	local name = ""
-	pcall(function()
-		name = instance.Name
-	end)
-	return name or ""
-end
-
-local function safeText(instance)
-	if not instance then
-		return ""
-	end
-
-	local text = ""
-	pcall(function()
-		text = instance.Text
-	end)
-	return text or ""
-end
-
-local function safeParent(instance)
-	if not instance then
-		return nil
-	end
-
-	local parent = nil
-	pcall(function()
-		parent = instance.Parent
-	end)
-	return parent
-end
-
-local function safeIsA(instance, className)
-	if not instance then
-		return false
-	end
-
-	local result = false
-	pcall(function()
-		result = instance:IsA(className)
-	end)
-	return result
-end
-
-local function safeIsDescendantOf(instance, ancestor)
-	if not instance or not ancestor then
-		return false
-	end
-
-	local result = false
-	pcall(function()
-		result = instance:IsDescendantOf(ancestor)
-	end)
-	return result
-end
-
-local function safeInstancePath(instance)
-	if not instance then
-		return "nil"
-	end
-
-	local ok, fullName = pcall(function()
-		return instance:GetFullName()
-	end)
-	if ok and fullName and fullName ~= "" then
-		return fullName
-	end
-
-	return safeName(instance)
-end
-
-local function safeGuiVisible(instance)
-	if not instance then
-		return false
-	end
-
-	local current = instance
-	while current do
-		if safeIsA(current, "ScreenGui") then
-			local enabled = true
-			pcall(function()
-				enabled = current.Enabled
-			end)
-			if not enabled then
-				return false
-			end
-		elseif safeIsA(current, "GuiObject") then
-			local visible = true
-			pcall(function()
-				visible = current.Visible
-			end)
-			if not visible then
-				return false
-			end
-		end
-		current = safeParent(current)
-	end
-
-	return true
-end
-
-local function safeGuiArea(instance)
-	if not instance or not safeIsA(instance, "GuiObject") then
-		return 0
-	end
-
-	local area = 0
-	pcall(function()
-		area = instance.AbsoluteSize.X * instance.AbsoluteSize.Y
-	end)
-	return area
-end
-
-local function getGuiTextMatchScore(text)
-	if type(text) ~= "string" or text == "" then
-		return 0
-	end
-
-	local lowered = string.lower(text)
-	if lowered == "yes" or lowered == "yes!" then
-		return 14
-	end
-	if lowered == "confirm" or lowered == "confirm!" then
-		return 8
-	end
-	if lowered == "ok" or lowered == "okay" then
-		return 4
-	end
-	if lowered:find("yes", 1, true) then
-		return 10
-	end
-	if lowered:find("confirm", 1, true) then
-		return 6
-	end
-	return 0
-end
-
-local function getStPatricDialogContextScore(root)
-	if not root then
-		return 0
-	end
-
-	local score = 0
-	for _, descendant in ipairs(root:GetDescendants()) do
-		if safeIsA(descendant, "TextLabel") or safeIsA(descendant, "TextButton") then
-			local content = string.lower(safeText(descendant))
-			if content:find("submit brainrots", 1, true) then
-				score = score + 8
-			elseif content:find("build the rainbow", 1, true) then
-				score = score + 7
-			elseif content:find("brainrot", 1, true) then
-				score = score + 4
-			elseif content:find("gone forever", 1, true) then
-				score = score + 4
-			elseif content:find("rainbow", 1, true) or content:find("gold", 1, true) then
-				score = score + 3
-			end
-		end
-	end
-
-	return score
-end
-
-local function getStPatricYesDebugCandidates(limit)
-	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
-	if not playerGui then
-		return "sin PlayerGui"
-	end
-
-	local candidates = {}
-	for _, descendant in ipairs(playerGui:GetDescendants()) do
-		if safeIsA(descendant, "GuiButton") then
-			local text = safeText(descendant)
-			local name = safeName(descendant)
-			local path = safeInstancePath(descendant)
-			local visible = safeGuiVisible(descendant)
-			local strictScore = scoreYesButton(descendant)
-			local looseScore = getGuiTextMatchScore(text)
-				+ math.max(0, getGuiTextMatchScore(name) - 2)
-				+ math.max(0, getGuiTextMatchScore(path) - 4)
-
-			if strictScore > 0 or looseScore > 0 then
-				table.insert(candidates, {
-					button = descendant,
-					strictScore = strictScore,
-					looseScore = looseScore,
-					visible = visible,
-					area = safeGuiArea(descendant),
-					text = text,
-					name = name,
-					path = path,
-				})
-			end
-		end
-	end
-
-	table.sort(candidates, function(a, b)
-		if a.strictScore ~= b.strictScore then
-			return a.strictScore > b.strictScore
-		end
-		if a.looseScore ~= b.looseScore then
-			return a.looseScore > b.looseScore
-		end
-		if a.visible ~= b.visible then
-			return a.visible
-		end
-		if a.area ~= b.area then
-			return a.area > b.area
-		end
-		return a.path < b.path
-	end)
-
-	if #candidates == 0 then
-		return "sin candidatos GuiButton"
-	end
-
-	local parts = {}
-	for i = 1, math.min(limit or 3, #candidates) do
-		local entry = candidates[i]
-		table.insert(
-			parts,
-			string.format(
-				"#%d strict=%d loose=%d visible=%s area=%d text=%s name=%s path=%s",
-				i,
-				entry.strictScore,
-				entry.looseScore,
-				tostring(entry.visible),
-				entry.area,
-				tostring(entry.text),
-				tostring(entry.name),
-				tostring(entry.path)
-			)
-		)
-	end
-
-	return table.concat(parts, " || ")
-end
-
-local function safePromptData(prompt)
-	local data = {
-		actionText = "",
-		objectText = "",
-		enabled = false,
-		holdDuration = 0,
-		maxActivationDistance = 0,
-	}
-
-	if not prompt then
-		return data
-	end
-
-	pcall(function()
-		data.actionText = prompt.ActionText or ""
-	end)
-	pcall(function()
-		data.objectText = prompt.ObjectText or ""
-	end)
-	pcall(function()
-		data.enabled = prompt.Enabled
-	end)
-	pcall(function()
-		data.holdDuration = prompt.HoldDuration or 0
-	end)
-	pcall(function()
-		data.maxActivationDistance = prompt.MaxActivationDistance or 0
-	end)
-
-	return data
-end
-
 local function updateCopyLogsButtonState()
 	if scriptClosed or not copyLogsButton then
 		return
@@ -488,6 +196,13 @@ local function updateCopyLogsButtonState()
 
 	copyLogsButton.Text = "COPIAR LOGS (" .. tostring(#storedLogs) .. ")"
 end
+
+local noisyLogEvents = {
+	SCAN = true,
+	NO_TARGET = true,
+	AUTOPILOT_OFF = true,
+	BRAINROT_SPAWN = true,
+}
 
 local function appendStoredLog(message)
 	table.insert(storedLogs, message)
@@ -499,6 +214,9 @@ end
 
 local function debugLog(eventName, details)
 	if not logEnabled then
+		return
+	end
+	if quietLogMode and noisyLogEvents[eventName] == true then
 		return
 	end
 
@@ -554,19 +272,32 @@ local function copyLogsToClipboard(status)
 	return copied
 end
 
+local function clearStoredLogs(status)
+	storedLogs = {}
+	lastScanSummary = ""
+	lastSelectionSummary = ""
+	lastAutopilotOffReason = nil
+	lastAutopilotOffLog = 0
+	updateCopyLogsButtonState()
+	if status then
+		status.Text = "LOGS LIMPIADOS"
+	end
+end
+
 local function debugOnce(eventName, details, key)
 	if key ~= nil then
-		if key == lastSelectionSummary and eventName == "TARGET_LOCK" then
+		if eventName == "TARGET_LOCK" and key == lastSelectionSummary then
 			return
 		end
-		if key == lastScanSummary and eventName == "SCAN" then
+		if key == lastScanSummary then
 			return
 		end
 	end
 
 	if eventName == "TARGET_LOCK" then
 		lastSelectionSummary = key or ""
-	elseif eventName == "SCAN" then
+	end
+	if key ~= nil then
 		lastScanSummary = key or ""
 	end
 
@@ -745,7 +476,7 @@ local function getCompactStateLabel()
 		return "GO"
 	end
 	if watchMode then
-		return "STP"
+		return "WATCH"
 	end
 	return "OFF"
 end
@@ -763,6 +494,115 @@ local function logHealthState(tag, humanoid, previousHealth)
 	end
 	debugLog("HEALTH_TRACE", string.format("%s hp=%.2f%s", tostring(tag), currentHealth, deltaText))
 	return currentHealth
+end
+
+local function safeTargetPath(target)
+	if not target then
+		return "nil"
+	end
+
+	local ok, fullName = pcall(function()
+		return target:GetFullName()
+	end)
+	if ok and fullName and fullName ~= "" then
+		return fullName
+	end
+
+	return tostring(target.Name)
+end
+
+local function getHumanoidStateName(humanoid)
+	if not humanoid then
+		return "nil"
+	end
+
+	local stateName = "unknown"
+	pcall(function()
+		stateName = humanoid:GetState().Name
+	end)
+	return stateName
+end
+
+local function formatVectorCompact(vector)
+	if not vector then
+		return "nil"
+	end
+
+	return string.format("%.1f,%.1f,%.1f", vector.X, vector.Y, vector.Z)
+end
+
+local function logObservedInventoryChange(carryCount, toolCount)
+	if carryCount ~= lastObservedCarryCount or toolCount ~= lastObservedToolCount then
+		debugLog(
+			"MONITOR_COUNT",
+			string.format(
+				"carry=%d->%d tools=%d->%d inv=%d returnLocked=%s",
+				lastObservedCarryCount,
+				carryCount,
+				lastObservedToolCount,
+				toolCount,
+				invCount,
+				tostring(returnLocked)
+			)
+		)
+		lastObservedCarryCount = carryCount
+		lastObservedToolCount = toolCount
+	end
+end
+
+local function logMonitorSnapshot(source, status)
+	if not (watchMode or autoPilot or isReturning or isGrabbing or eventShieldMode) then
+		return
+	end
+
+	local now = os.clock()
+	if now - lastMonitorLog < monitorLogInterval then
+		return
+	end
+	lastMonitorLog = now
+
+	local root = getRoot()
+	local humanoid = getHumanoid()
+	if not root or not humanoid then
+		debugLog("MONITOR", "src=" .. tostring(source) .. " root/humanoid missing")
+		return
+	end
+
+	local toolCount = getFarmToolCount()
+	local carryCount = math.max(invCount, toolCount)
+	local velocity = root.AssemblyLinearVelocity.Magnitude
+	debugLog(
+		"MONITOR",
+		string.format(
+			"src=%s mode=%s auto=%s return=%s grab=%s hp=%.1f/%0.1f state=%s anchored=%s platform=%s carry=%d tools=%d pos=(%s) vel=%.1f target=%s status=%s",
+			tostring(source),
+			getCompactStateLabel(),
+			tostring(autoPilot),
+			tostring(isReturning),
+			tostring(isGrabbing),
+			humanoid.Health,
+			humanoid.MaxHealth,
+			getHumanoidStateName(humanoid),
+			tostring(root.Anchored),
+			tostring(humanoid.PlatformStand),
+			carryCount,
+			toolCount,
+			formatVectorCompact(root.Position),
+			velocity,
+			safeTargetPath(currentTarget),
+			status and tostring(status.Text) or "nil"
+		)
+	)
+end
+
+local function logInterference(eventName, details, lastLoggedAt)
+	local now = os.clock()
+	if now - lastLoggedAt < interferenceLogCooldown then
+		return lastLoggedAt
+	end
+
+	debugLog(eventName, details)
+	return now
 end
 
 local function updateTowerButtonState()
@@ -783,11 +623,20 @@ local function updateShieldButtonState()
 	shieldButton.TextColor3 = Color3.new(1, 1, 1)
 end
 
+local function updateQuietLogsButtonState()
+	if scriptClosed or not quietLogsButton then
+		return
+	end
+	quietLogsButton.Text = quietLogMode and "LOG QUIET ON" or "LOG QUIET OFF"
+	quietLogsButton.BackgroundColor3 = quietLogMode and Color3.fromRGB(75, 120, 75) or Color3.fromRGB(75, 75, 90)
+	quietLogsButton.TextColor3 = Color3.new(1, 1, 1)
+end
+
 local function updateButtonState(btn)
 	if scriptClosed then
 		return
 	end
-	btn.Text = "STP | " .. getCompactStateLabel() .. " | " .. collisionModeLabel
+	btn.Text = "OSAKA | " .. getCompactStateLabel() .. " | " .. collisionModeLabel
 	btn.BackgroundColor3 = watchMode and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(180, 50, 50)
 end
 
@@ -1315,7 +1164,13 @@ local function releaseAutopilot(reason, status)
 	if reason then
 		status.Text = reason
 	end
-	debugLog("AUTOPILOT_OFF", reason or "sin motivo")
+	local normalizedReason = reason or "sin motivo"
+	local now = os.clock()
+	if normalizedReason ~= lastAutopilotOffReason or (now - lastAutopilotOffLog) >= autopilotOffLogCooldown then
+		debugLog("AUTOPILOT_OFF", normalizedReason)
+		lastAutopilotOffReason = normalizedReason
+		lastAutopilotOffLog = now
+	end
 
 	if mainButton then
 		updateButtonState(mainButton)
@@ -2095,375 +1950,6 @@ local function returnToBase(status, reasonText, runToken)
 	return true
 end
 
-local function getStPatricTargets()
-	local results = {}
-	local brainrots = workspace:FindFirstChild("ActiveBrainrots")
-	local containers = brainrots and {brainrots} or {workspace}
-
-	for _, container in ipairs(containers) do
-		for _, descendant in ipairs(container:GetDescendants()) do
-			if isBrainrotCandidate(descendant) and isValidTarget(descendant) and isPreferredLiveTarget(descendant) then
-				appendTargetIfValid(results, descendant)
-			end
-		end
-	end
-
-	table.sort(results, function(a, b)
-		local pa = getTargetPriority(a)
-		local pb = getTargetPriority(b)
-
-		if pa ~= pb then
-			return pa > pb
-		end
-
-		local root = getRoot()
-		if not root then
-			return safeInstancePath(a) < safeInstancePath(b)
-		end
-
-		local posa = getTargetPosition(a)
-		local posb = getTargetPosition(b)
-		if not posa then
-			return false
-		end
-		if not posb then
-			return true
-		end
-
-		return (root.Position - posa).Magnitude < (root.Position - posb).Magnitude
-	end)
-
-	return results
-end
-
-local function getStPatricTarget()
-	local targets = getStPatricTargets()
-	local target = targets[1]
-	if target and currentTarget ~= target then
-		debugOnce(
-			"STP_TARGET",
-			"pick -> " .. getTargetRarity(target) .. " | " .. safeInstancePath(target),
-			safeInstancePath(target)
-		)
-	end
-	return target, #targets
-end
-
-local function getWorldPositionFromInstance(instance)
-	if not instance then
-		return nil
-	end
-
-	if safeIsA(instance, "Attachment") then
-		local position = nil
-		pcall(function()
-			position = instance.WorldPosition
-		end)
-		return position
-	end
-
-	if safeIsA(instance, "BasePart") then
-		local position = nil
-		pcall(function()
-			position = instance.Position
-		end)
-		return position
-	end
-
-	if safeIsA(instance, "Model") then
-		local ok, pivot = pcall(function()
-			return instance:GetPivot()
-		end)
-		if ok and pivot then
-			return pivot.Position
-		end
-	end
-
-	local parent = safeParent(instance)
-	return parent and parent ~= instance and getWorldPositionFromInstance(parent) or nil
-end
-
-local function scoreStPatricPrompt(prompt)
-	if not prompt or not safeIsA(prompt, "ProximityPrompt") then
-		return 0
-	end
-
-	local activeBrainrots = workspace:FindFirstChild("ActiveBrainrots")
-	if activeBrainrots and safeIsDescendantOf(prompt, activeBrainrots) then
-		return 0
-	end
-
-	local promptData = safePromptData(prompt)
-	local parent = safeParent(prompt)
-	local texts = {
-		safeName(prompt),
-		safeInstancePath(prompt),
-		promptData.actionText,
-		promptData.objectText,
-		safeName(parent),
-		safeInstancePath(parent),
-	}
-	local score = 0
-
-	for _, text in ipairs(texts) do
-		local matched, keyword = containsKeyword(text)
-		if matched then
-			score = score + 2
-			if keyword == "submit" or keyword == "deliver" or keyword == "build" then
-				score = score + 4
-			elseif keyword == "pot" or keyword == "cauld" or keyword == "gold" or keyword == "rainbow" then
-				score = score + 3
-			end
-		end
-	end
-
-	return score
-end
-
-local function findStPatricSubmitPrompt()
-	local bestPrompt = nil
-	local bestScore = 0
-
-	for _, descendant in ipairs(workspace:GetDescendants()) do
-		if safeIsA(descendant, "ProximityPrompt") then
-			local score = scoreStPatricPrompt(descendant)
-			if score > bestScore then
-				bestScore = score
-				bestPrompt = descendant
-			end
-		end
-	end
-
-	if bestPrompt then
-		debugLog("STP_POT", "prompt=" .. safeInstancePath(bestPrompt) .. " score=" .. tostring(bestScore))
-	else
-		debugLog("STP_POT", "sin prompt de olla")
-	end
-
-	return bestPrompt, bestScore
-end
-
-local function scoreYesButton(button)
-	if not button or not safeIsA(button, "GuiButton") then
-		return 0
-	end
-
-	if not safeGuiVisible(button) then
-		return 0
-	end
-
-	local score = 0
-	local text = safeText(button)
-	local name = safeName(button)
-	local path = safeInstancePath(button)
-
-	score = score + getGuiTextMatchScore(text)
-	score = score + math.max(0, getGuiTextMatchScore(name) - 2)
-	score = score + math.max(0, getGuiTextMatchScore(path) - 4)
-
-	if score <= 0 then
-		return 0
-	end
-
-	if safeGuiArea(button) >= 1200 then
-		score = score + 2
-	end
-
-	local parent = safeParent(button)
-	for _ = 1, 4 do
-		if not parent then
-			break
-		end
-		score = score + getStPatricDialogContextScore(parent)
-		parent = safeParent(parent)
-	end
-
-	if score < 12 then
-		return 0
-	end
-
-	return score
-end
-
-local function findStPatricYesButton()
-	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
-	if not playerGui then
-		return nil, 0
-	end
-
-	local bestButton = nil
-	local bestScore = 0
-	for _, descendant in ipairs(playerGui:GetDescendants()) do
-		if safeIsA(descendant, "GuiButton") then
-			local score = scoreYesButton(descendant)
-			if score > bestScore then
-				bestScore = score
-				bestButton = descendant
-			end
-		end
-	end
-
-	return bestButton, bestScore
-end
-
-local function activateStPatricYesButton(button)
-	if not button then
-		return false
-	end
-
-	pcall(function()
-		button.Active = true
-	end)
-	pcall(function()
-		button.Interactable = true
-	end)
-
-	local activated = pcall(function()
-		button:Activate()
-	end)
-
-	if type(firesignal) == "function" then
-		local signalOk = pcall(function()
-			firesignal(button.MouseButton1Click)
-		end)
-		activated = activated or signalOk
-
-		signalOk = pcall(function()
-			firesignal(button.Activated, nil, 1)
-		end)
-		activated = activated or signalOk
-	end
-
-	return activated
-end
-
-local function confirmStPatricDialog(status)
-	local deadline = os.clock() + 3.5
-	while os.clock() < deadline do
-		if scriptClosed then
-			return false
-		end
-
-		local yesButton, score = findStPatricYesButton()
-		if yesButton then
-			local ok = activateStPatricYesButton(yesButton)
-			debugLog("STP_CONFIRM", "button=" .. safeInstancePath(yesButton) .. " score=" .. tostring(score) .. " ok=" .. tostring(ok))
-			if status then
-				status.Text = ok and "STP: CONFIRMANDO..." or "STP: YES DETECTADO"
-			end
-			return ok
-		end
-
-		task.wait(0.1)
-	end
-
-	debugLog("STP_CONFIRM_FAIL", "yes button no detectado")
-	debugLog("STP_CONFIRM_CANDIDATES", getStPatricYesDebugCandidates(5))
-	return false
-end
-
-local function submitStPatricLoad(status, runToken)
-	if runToken ~= nil and not isOperationValid(runToken) then
-		debugLog("STP_SUBMIT_ABORT", "operacion invalidada antes de entregar")
-		return false
-	end
-	if os.clock() - stPatricLastSubmitAttempt < stPatricSubmitCooldown then
-		releaseAutopilot("STP: ESPERANDO OLLA...", status)
-		return false
-	end
-
-	local carryCount = getEffectiveCarryCount()
-	if carryCount <= 0 then
-		return false
-	end
-
-	stPatricLastSubmitAttempt = os.clock()
-	isReturning = true
-	returnLocked = true
-	if mainButton then
-		updateButtonState(mainButton)
-	end
-
-	if not engageAutopilot("STP: LLEVANDO A OLLA...", status) then
-		isReturning = false
-		return false
-	end
-
-	local prompt, promptScore = findStPatricSubmitPrompt()
-	if not prompt or promptScore <= 0 then
-		releaseAutopilot("STP: OLLA NO ENCONTRADA", status)
-		isReturning = false
-		return false
-	end
-
-	local promptPos = getWorldPositionFromInstance(prompt)
-	if promptPos then
-		local root = getRoot()
-		if root and (root.Position - promptPos).Magnitude > 10 then
-			ghostTravel(promptPos, nil, nil, runToken)
-		end
-	end
-
-	pcall(function()
-		prompt.RequiresLineOfSight = false
-		prompt.MaxActivationDistance = 100
-		prompt.HoldDuration = 0
-	end)
-
-	local toolsBefore = getFarmToolCount()
-	for attempt = 1, 3 do
-		if runToken ~= nil and not isOperationValid(runToken) then
-			debugLog("STP_SUBMIT_ABORT", "operacion invalidada durante entrega")
-			isReturning = false
-			return false
-		end
-
-		local fireOk, fireErr = pcall(function()
-			fireproximityprompt(prompt)
-		end)
-		debugLog("STP_SUBMIT_TRIGGER", "prompt=" .. safeInstancePath(prompt) .. " ok=" .. tostring(fireOk) .. (fireErr and (" err=" .. tostring(fireErr)) or "") .. " attempt=" .. tostring(attempt))
-
-		task.wait(0.2)
-		confirmStPatricDialog(status)
-
-		local deadline = os.clock() + 2.5
-		while os.clock() < deadline do
-			if runToken ~= nil and not isOperationValid(runToken) then
-				debugLog("STP_SUBMIT_ABORT", "operacion invalidada esperando confirmacion de entrega")
-				isReturning = false
-				return false
-			end
-			if isRespawning then
-				debugLog("STP_SUBMIT_ABORT", "respawn detectado durante confirmacion de entrega")
-				isReturning = false
-				return false
-			end
-			local toolsNow = getFarmToolCount()
-			local carryNow = getEffectiveCarryCount()
-			if toolsNow < toolsBefore or carryNow <= 0 then
-				captureBaselineTools()
-				invCount = 0
-				grabAttempts = 0
-				currentTarget = nil
-				blacklist = {}
-				returnLocked = false
-				isReturning = false
-				refreshTargets(true)
-				status.Text = "STP: ENTREGA OK"
-				debugLog("STP_SUBMIT_OK", "carry_before=" .. tostring(carryCount) .. " tools_before=" .. tostring(toolsBefore) .. " tools_now=" .. tostring(toolsNow))
-				releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
-				return true
-			end
-			task.wait(0.1)
-		end
-	end
-
-	debugLog("STP_SUBMIT_FAIL", "sin confirmacion de entrega")
-	isReturning = false
-	releaseAutopilot("STP: ENTREGA FALLIDA", status)
-	return false
-end
-
 local function bindBrainrotWatcher()
 	if brainrotAddedConn then
 		brainrotAddedConn:Disconnect()
@@ -2510,7 +1996,7 @@ sg.ResetOnSpawn = false
 sg.Parent = guiParent
 
 local frame = Instance.new("Frame", sg)
-frame.Size = UDim2.new(0, 172, 0, 38)
+frame.Size = UDim2.new(0, 160, 0, 36)
 frame.Position = UDim2.new(0.05, 0, 0.3, 0)
 frame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
 frame.Active = true
@@ -2520,50 +2006,28 @@ Instance.new("UICorner", frame)
 local expanded = false
 local filtersExpanded = false
 
-local towerBtn = Instance.new("TextButton", sg)
-towerBtn.Size = UDim2.new(0, 84, 0, 24)
-towerBtn.Position = UDim2.new(0.05, 0, 0.3, -28)
-towerBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
-towerBtn.Font = Enum.Font.GothamBold
-towerBtn.TextSize = 11
-towerBtn.BorderSizePixel = 0
-Instance.new("UICorner", towerBtn)
-towerBtn.Visible = false
-towerButton = towerBtn
-
-local shieldBtn = Instance.new("TextButton", sg)
-shieldBtn.Size = UDim2.new(0, 84, 0, 24)
-shieldBtn.Position = UDim2.new(0.05, 88, 0.3, -28)
-shieldBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
-shieldBtn.Font = Enum.Font.GothamBold
-shieldBtn.TextSize = 11
-shieldBtn.BorderSizePixel = 0
-Instance.new("UICorner", shieldBtn)
-shieldBtn.Visible = false
-shieldButton = shieldBtn
-
 local btn = Instance.new("TextButton", frame)
-btn.Size = UDim2.new(1, -74, 0, 32)
-btn.Position = UDim2.new(0, 6, 0, 3)
+btn.Size = UDim2.new(1, -68, 0, 28)
+btn.Position = UDim2.new(0, 4, 0, 4)
 btn.TextColor3 = Color3.new(1, 1, 1)
 btn.Font = Enum.Font.GothamBold
-btn.TextSize = 13
+btn.TextSize = 12
 Instance.new("UICorner", btn)
 mainButton = btn
 
 local expandBtn = Instance.new("TextButton", frame)
-expandBtn.Size = UDim2.new(0, 30, 0, 32)
-expandBtn.Position = UDim2.new(1, -68, 0, 3)
+expandBtn.Size = UDim2.new(0, 28, 0, 28)
+expandBtn.Position = UDim2.new(1, -60, 0, 4)
 expandBtn.Text = "+"
 expandBtn.TextColor3 = Color3.new(1, 1, 1)
 expandBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
 expandBtn.Font = Enum.Font.GothamBold
-expandBtn.TextSize = 18
+expandBtn.TextSize = 16
 Instance.new("UICorner", expandBtn)
 
 local closeBtn = Instance.new("TextButton", frame)
-closeBtn.Size = UDim2.new(0, 30, 0, 32)
-closeBtn.Position = UDim2.new(1, -36, 0, 3)
+closeBtn.Size = UDim2.new(0, 28, 0, 28)
+closeBtn.Position = UDim2.new(1, -30, 0, 4)
 closeBtn.Text = "X"
 closeBtn.TextColor3 = Color3.new(1, 1, 1)
 closeBtn.BackgroundColor3 = Color3.fromRGB(120, 45, 45)
@@ -2572,24 +2036,24 @@ closeBtn.TextSize = 14
 Instance.new("UICorner", closeBtn)
 
 local panel = Instance.new("Frame", frame)
-panel.Position = UDim2.new(0, 6, 0, 40)
-panel.Size = UDim2.new(1, -12, 0, 140)
+panel.Position = UDim2.new(0, 6, 0, 38)
+panel.Size = UDim2.new(1, -12, 0, 130)
 panel.BackgroundTransparency = 1
 panel.Visible = false
 
 local status = Instance.new("TextLabel", panel)
 status.Size = UDim2.new(1, 0, 0, 20)
 status.Position = UDim2.new(0, 0, 0, 0)
-status.Text = "ST PATRIC: ESPERANDO"
+status.Text = "ESTADO: ESPERANDO"
 status.TextColor3 = Color3.new(1, 1, 1)
 status.BackgroundTransparency = 1
 status.Font = Enum.Font.Gotham
-status.TextSize = 12
+status.TextSize = 11
 status.TextXAlignment = Enum.TextXAlignment.Left
 
 local limitLabel = Instance.new("TextLabel", panel)
 limitLabel.Size = UDim2.new(1, 0, 0, 18)
-limitLabel.Position = UDim2.new(0, 0, 0, 24)
+limitLabel.Position = UDim2.new(0, 0, 0, 22)
 limitLabel.Text = "LIMITE"
 limitLabel.TextColor3 = Color3.new(0.8, 0.8, 0.8)
 limitLabel.BackgroundTransparency = 1
@@ -2599,7 +2063,7 @@ limitLabel.TextXAlignment = Enum.TextXAlignment.Left
 
 local limitRow = Instance.new("Frame", panel)
 limitRow.Size = UDim2.new(1, 0, 0, 28)
-limitRow.Position = UDim2.new(0, 0, 0, 46)
+limitRow.Position = UDim2.new(0, 0, 0, 42)
 limitRow.BackgroundTransparency = 1
 
 local limitMinus = Instance.new("TextButton", limitRow)
@@ -2633,19 +2097,29 @@ limitPlus.TextSize = 16
 Instance.new("UICorner", limitPlus)
 
 local filtersBtn = Instance.new("TextButton", panel)
-filtersBtn.Size = UDim2.new(1, 0, 0, 28)
-filtersBtn.Position = UDim2.new(0, 0, 0, 80)
+filtersBtn.Size = UDim2.new(0.5, -2, 0, 24)
+filtersBtn.Position = UDim2.new(0, 0, 0, 76)
 filtersBtn.Text = "FILTROS ▾"
 filtersBtn.TextColor3 = Color3.new(1, 1, 1)
 filtersBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
 filtersBtn.Font = Enum.Font.GothamBold
-filtersBtn.TextSize = 12
+filtersBtn.TextSize = 11
 Instance.new("UICorner", filtersBtn)
-filtersBtn.Visible = false
+
+local quietLogsBtn = Instance.new("TextButton", panel)
+quietLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
+quietLogsBtn.Position = UDim2.new(0.5, 2, 0, 76)
+quietLogsBtn.TextColor3 = Color3.new(1, 1, 1)
+quietLogsBtn.BackgroundColor3 = Color3.fromRGB(75, 120, 75)
+quietLogsBtn.Font = Enum.Font.GothamBold
+quietLogsBtn.TextSize = 11
+quietLogsBtn.BorderSizePixel = 0
+Instance.new("UICorner", quietLogsBtn)
+quietLogsButton = quietLogsBtn
 
 local copyLogsBtn = Instance.new("TextButton", panel)
-copyLogsBtn.Size = UDim2.new(1, 0, 0, 24)
-copyLogsBtn.Position = UDim2.new(0, 0, 0, 114)
+copyLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
+copyLogsBtn.Position = UDim2.new(0, 0, 0, 104)
 copyLogsBtn.TextColor3 = Color3.new(1, 1, 1)
 copyLogsBtn.BackgroundColor3 = Color3.fromRGB(65, 90, 140)
 copyLogsBtn.Font = Enum.Font.GothamBold
@@ -2654,9 +2128,21 @@ copyLogsBtn.BorderSizePixel = 0
 Instance.new("UICorner", copyLogsBtn)
 copyLogsButton = copyLogsBtn
 
+local clearLogsBtn = Instance.new("TextButton", panel)
+clearLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
+clearLogsBtn.Position = UDim2.new(0.5, 2, 0, 104)
+clearLogsBtn.Text = "LIMPIAR LOGS"
+clearLogsBtn.TextColor3 = Color3.new(1, 1, 1)
+clearLogsBtn.BackgroundColor3 = Color3.fromRGB(110, 55, 55)
+clearLogsBtn.Font = Enum.Font.GothamBold
+clearLogsBtn.TextSize = 11
+clearLogsBtn.BorderSizePixel = 0
+Instance.new("UICorner", clearLogsBtn)
+clearLogsButton = clearLogsBtn
+
 local scroll = Instance.new("ScrollingFrame", frame)
-scroll.Size = UDim2.new(1, -12, 0, 146)
-scroll.Position = UDim2.new(0, 6, 0, 184)
+scroll.Size = UDim2.new(1, -12, 0, 138)
+scroll.Position = UDim2.new(0, 6, 0, 172)
 scroll.BackgroundTransparency = 1
 scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 scroll.ScrollBarThickness = 4
@@ -2694,6 +2180,8 @@ local function shutdownScript()
 	lastScanSummary = ""
 	lastSelectionSummary = ""
 	lastScanHint = ""
+	lastAutopilotOffReason = nil
+	lastAutopilotOffLog = 0
 	startupReleaseTime = 0
 	firstTripPending = false
 	shieldCFrame = nil
@@ -2723,6 +2211,9 @@ local function shutdownScript()
 	charAddedConn = disconnectConnection(charAddedConn)
 	brainrotAddedConn = disconnectConnection(brainrotAddedConn)
 	steppedConn = disconnectConnection(steppedConn)
+	healthChangedConn = disconnectConnection(healthChangedConn)
+	stateChangedConn = disconnectConnection(stateChangedConn)
+	seatedConn = disconnectConnection(seatedConn)
 
 	if mainLoopThread then
 		pcall(function()
@@ -2735,6 +2226,8 @@ local function shutdownScript()
 	towerButton = nil
 	shieldButton = nil
 	copyLogsButton = nil
+	clearLogsButton = nil
+	quietLogsButton = nil
 
 	if sg then
 		sg:Destroy()
@@ -2752,11 +2245,11 @@ local function applyLayout()
 	filtersBtn.Text = filtersExpanded and "FILTROS ▴" or "FILTROS ▾"
 
 	if not expanded then
-		frame.Size = UDim2.new(0, 172, 0, 38)
+		frame.Size = UDim2.new(0, 160, 0, 36)
 	elseif filtersExpanded then
-		frame.Size = UDim2.new(0, 172, 0, 336)
+		frame.Size = UDim2.new(0, 160, 0, 314)
 	else
-		frame.Size = UDim2.new(0, 172, 0, 184)
+		frame.Size = UDim2.new(0, 160, 0, 174)
 	end
 
 	scroll.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 8)
@@ -2765,6 +2258,9 @@ end
 local function updateReturnLimit(delta)
 	if scriptClosed then
 		return
+	end
+	if delta then
+		returnAt = math.clamp(returnAt + delta, 1, 99)
 	end
 	limitValue.Text = tostring(returnAt)
 end
@@ -2796,22 +2292,20 @@ filtersBtn.MouseButton1Click:Connect(function()
 	applyLayout()
 end)
 
+quietLogsBtn.MouseButton1Click:Connect(function()
+	if scriptClosed then
+		return
+	end
+	quietLogMode = not quietLogMode
+	updateQuietLogsButtonState()
+	if status then
+		status.Text = quietLogMode and "LOG QUIET ON" or "LOG QUIET OFF"
+	end
+	debugLog("LOG_MODE", quietLogMode and "quiet on" or "quiet off")
+end)
+
 closeBtn.MouseButton1Click:Connect(function()
 	shutdownScript()
-end)
-
-towerBtn.MouseButton1Click:Connect(function()
-	if scriptClosed then
-		return
-	end
-	status.Text = "ST PATRIC DEDICADO"
-end)
-
-shieldBtn.MouseButton1Click:Connect(function()
-	if scriptClosed then
-		return
-	end
-	status.Text = "ST PATRIC DEDICADO"
 end)
 
 copyLogsBtn.MouseButton1Click:Connect(function()
@@ -2820,6 +2314,13 @@ copyLogsBtn.MouseButton1Click:Connect(function()
 	end
 	copyLogsToClipboard(status)
 	updateCopyLogsButtonState()
+end)
+
+clearLogsBtn.MouseButton1Click:Connect(function()
+	if scriptClosed then
+		return
+	end
+	clearStoredLogs(status)
 end)
 
 for _, name in ipairs(filterOrder) do
@@ -2847,6 +2348,7 @@ applyLayout()
 updateReturnLimit()
 updateTowerButtonState()
 updateShieldButtonState()
+updateQuietLogsButtonState()
 updateCopyLogsButtonState()
 
 steppedConn = RS.Stepped:Connect(function()
@@ -2885,6 +2387,38 @@ steppedConn = RS.Stepped:Connect(function()
 	local humanoid = getHumanoid()
 	if not character or not root then
 		return
+	end
+
+	local observedToolCount = getFarmToolCount()
+	local observedCarryCount = math.max(invCount, observedToolCount)
+	logObservedInventoryChange(observedCarryCount, observedToolCount)
+	logMonitorSnapshot("stepped", status)
+
+	if autoPilot and not eventShieldMode then
+		if not humanoid.PlatformStand then
+			lastPlatformInterferenceLog = logInterference(
+				"INTERFERE_PLATFORM",
+				string.format("platform=false state=%s target=%s", getHumanoidStateName(humanoid), safeTargetPath(currentTarget)),
+				lastPlatformInterferenceLog
+			)
+		end
+
+		if root.Anchored then
+			lastAnchorInterferenceLog = logInterference(
+				"INTERFERE_ANCHOR",
+				string.format("anchored=true pos=(%s) fly=(%s)", formatVectorCompact(root.Position), formatVectorCompact(flyValue.Value.Position)),
+				lastAnchorInterferenceLog
+			)
+		end
+
+		local desyncDistance = (root.Position - flyValue.Value.Position).Magnitude
+		if desyncDistance > 3 then
+			lastDesyncInterferenceLog = logInterference(
+				"INTERFERE_DESYNC",
+				string.format("dist=%.2f root=(%s) fly=(%s) vel=%.2f", desyncDistance, formatVectorCompact(root.Position), formatVectorCompact(flyValue.Value.Position), root.AssemblyLinearVelocity.Magnitude),
+				lastDesyncInterferenceLog
+			)
+		end
 	end
 
 	if eventShieldMode and shieldCFrame then
@@ -2927,10 +2461,65 @@ local function bindCharacter(btnRef, statusRef)
 		diedConn:Disconnect()
 		diedConn = nil
 	end
+	healthChangedConn = disconnectConnection(healthChangedConn)
+	stateChangedConn = disconnectConnection(stateChangedConn)
+	seatedConn = disconnectConnection(seatedConn)
 
 	local character = getCharacter()
 	local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
 	if humanoid then
+		local lastHealth = humanoid.Health
+		healthChangedConn = humanoid.HealthChanged:Connect(function(health)
+			if scriptClosed then
+				return
+			end
+
+			local delta = health - lastHealth
+			if math.abs(delta) >= 5 or health <= 0 then
+				debugLog(
+					"HEALTH_EVENT",
+					string.format(
+						"hp=%.1f delta=%.1f max=%.1f state=%s watch=%s auto=%s",
+						health,
+						delta,
+						humanoid.MaxHealth,
+						getHumanoidStateName(humanoid),
+						tostring(watchMode),
+						tostring(autoPilot)
+					)
+				)
+			end
+			lastHealth = health
+		end)
+
+		stateChangedConn = humanoid.StateChanged:Connect(function(oldState, newState)
+			if scriptClosed then
+				return
+			end
+			if watchMode or autoPilot or isReturning or isGrabbing or eventShieldMode then
+				debugLog(
+					"STATE_EVENT",
+					string.format(
+						"%s -> %s platform=%s floor=%s",
+						oldState.Name,
+						newState.Name,
+						tostring(humanoid.PlatformStand),
+						tostring(humanoid.FloorMaterial)
+					)
+				)
+			end
+		end)
+
+		seatedConn = humanoid.Seated:Connect(function(active, seatPart)
+			if scriptClosed then
+				return
+			end
+			debugLog(
+				"SEATED_EVENT",
+				string.format("active=%s seat=%s mode=%s", tostring(active), seatPart and seatPart:GetFullName() or "nil", getCompactStateLabel())
+			)
+		end)
+
 		diedConn = humanoid.Died:Connect(function()
 			if scriptClosed then
 				return
@@ -2968,7 +2557,7 @@ charAddedConn = LP.CharacterAdded:Connect(function()
 			captureBaselineTools()
 			armStartupStabilization("respawn")
 			isRespawning = false
-			releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
+			releaseAutopilot("VIGILANDO LIBRE...", status)
 			refreshTargets(true)
 		end
 	end
@@ -3008,12 +2597,13 @@ btn.MouseButton1Click:Connect(function()
 	updateButtonState(btn)
 
 	if watchMode then
-		if eventShieldMode then
-			setEventShieldMode(false, status)
-		end
+		lastPlatformInterferenceLog = 0
+		lastAnchorInterferenceLog = 0
+		lastDesyncInterferenceLog = 0
 		resetSessionProgress()
 		invalidateRunToken("watchOn")
-		debugLog("STP_ON", string.format("base=(%.2f, %.2f, %.2f)", root.Position.X, root.Position.Y, root.Position.Z))
+		debugLog("WATCH_ON", string.format("base=(%.2f, %.2f, %.2f)", root.Position.X, root.Position.Y, root.Position.Z))
+		debugLog("MONITOR_SESSION", "watch iniciado con monitoreo activo")
 		basePos = root.Position
 		flyValue.Value = root.CFrame
 		root.Anchored = false
@@ -3022,12 +2612,15 @@ btn.MouseButton1Click:Connect(function()
 		resetRunState()
 		bindBrainrotWatcher()
 		refreshTargets(true)
-		status.Text = "STP: BUSCANDO BRAINROTS..."
-		releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
+		releaseAutopilot("VIGILANDO LIBRE...", status)
 	else
 		invalidateRunToken("watchOff")
-		debugLog("STP_OFF", "script en espera")
-		releaseAutopilot("ST PATRIC: ESPERANDO", status)
+		lastPlatformInterferenceLog = 0
+		lastAnchorInterferenceLog = 0
+		lastDesyncInterferenceLog = 0
+		debugLog("WATCH_OFF", "script en espera")
+		debugLog("MONITOR_SESSION", "watch detenido")
+		releaseAutopilot("ESTADO: ESPERANDO", status)
 		resetRunState()
 	end
 end)
@@ -3068,26 +2661,37 @@ mainLoopThread = task.spawn(function()
 				return
 			end
 
+			local urgentFound, urgentTarget = hasHighPriorityTarget()
+			if urgentFound and urgentTarget and urgentTarget ~= currentTarget and not isReturning then
+				debugLog("TARGET_URGENT", urgentTarget:GetFullName())
+				currentTarget = urgentTarget
+				status.Text = "OBJETIVO PRIORITARIO DETECTADO"
+			end
+
 			if (returnLocked or carryCount >= returnAt) and not isReturning then
-				debugLog("STP_RETURN", "returnLocked=" .. tostring(returnLocked) .. " inv=" .. tostring(invCount) .. " carry=" .. tostring(carryCount))
-				if os.clock() - stPatricLastSubmitAttempt < stPatricSubmitCooldown then
-					releaseAutopilot("STP: ESPERANDO OLLA...", status)
+				debugLog("LOOP_RETURN", "returnLocked=" .. tostring(returnLocked) .. " inv=" .. tostring(invCount) .. " carry=" .. tostring(carryCount))
+				if os.clock() - lastDepositAttempt < depositRetryCooldown then
+					releaseAutopilot("ESPERANDO HOME...", status)
 					return
 				end
 				returnLocked = true
-				submitStPatricLoad(status, runToken)
+				returnToBase(status, "VOLVIENDO A HOME...", runToken)
 				return
 			end
 
-			local target, availableCount = getStPatricTarget()
+			local target, availableCount = getClosestTarget()
 			if not target then
-				debugLog("STP_NO_TARGET", "inv=" .. tostring(invCount) .. " returnLocked=" .. tostring(returnLocked))
+				debugOnce(
+					"NO_TARGET",
+					"inv=" .. tostring(invCount) .. " returnLocked=" .. tostring(returnLocked),
+					"no_target:" .. tostring(invCount) .. ":" .. tostring(returnLocked) .. ":" .. tostring(lastScanHint)
+				)
 				if (invCount > 0 or returnLocked) and not isReturning and not isGrabbing then
 					returnLocked = invCount > 0 or returnLocked
-					submitStPatricLoad(status, runToken)
+					returnToBase(status, "SIN MAS OBJETIVOS, VOLVIENDO...", runToken)
 				else
 					currentTarget = nil
-					releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
+					releaseAutopilot(lastScanHint ~= "" and lastScanHint or "VIGILANDO LIBRE...", status)
 				end
 				return
 			end
@@ -3107,7 +2711,7 @@ mainLoopThread = task.spawn(function()
 
 			local dist = (root.Position - targetPos).Magnitude
 			if dist > 8 then
-				debugLog("STP_TRAVEL", string.format("target=%s rarity=%s dist=%.2f", target:GetFullName(), getTargetRarity(target), dist))
+				debugLog("TRAVEL_START", string.format("target=%s rarity=%s dist=%.2f", target:GetFullName(), getTargetRarity(target), dist))
 				status.Text = "VIAJANDO A " .. getTargetRarity(target)
 				local reached = ghostTravel(targetPos, nil, nil, runToken)
 				if not reached then
@@ -3145,7 +2749,7 @@ mainLoopThread = task.spawn(function()
 				if syncedCount > 0 then
 					invCount = math.max(invCount, syncedCount)
 				end
-				debugLog("STP_GRAB_OK", "inv=" .. tostring(invCount) .. " total=" .. tostring(sessionGrabCount) .. " tools=" .. tostring(getFarmToolCount()))
+				debugLog("GRAB_RESULT", "ok inv=" .. tostring(invCount) .. " total=" .. tostring(sessionGrabCount) .. " tools=" .. tostring(getFarmToolCount()))
 				if invCount >= returnAt then
 					returnLocked = true
 				end
@@ -3154,11 +2758,11 @@ mainLoopThread = task.spawn(function()
 				currentTarget = nil
 				removeFromCache(target)
 				refreshTargets(true)
-				status.Text = "STP: " .. tostring(invCount) .. "/" .. tostring(returnAt)
+				status.Text = "AGARRADO: " .. tostring(invCount) .. "/" .. tostring(returnAt)
 
 				if returnLocked or invCount >= returnAt then
-					debugLog("STP_TRIGGER", "limite alcanzado")
-					submitStPatricLoad(status, runToken)
+					debugLog("RETURN_TRIGGER", "limite alcanzado")
+					returnToBase(status, "VOLVIENDO A HOME...", runToken)
 				else
 					task.wait(0.12)
 				end
@@ -3168,8 +2772,8 @@ mainLoopThread = task.spawn(function()
 					logHealthState("grab_fail", currentHumanoid)
 				end
 				grabAttempts = grabAttempts + 1
-				debugLog("STP_GRAB_FAIL", "fail intento=" .. tostring(grabAttempts))
-				status.Text = "STP FAIL " .. tostring(grabAttempts) .. "/3"
+				debugLog("GRAB_RESULT", "fail intento=" .. tostring(grabAttempts))
+				status.Text = "INTENTO " .. tostring(grabAttempts) .. "/3"
 				if grabAttempts >= 3 then
 					blacklist[target] = true
 					currentTarget = nil
