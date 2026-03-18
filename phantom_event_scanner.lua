@@ -481,10 +481,15 @@ end
 isOrbModel = function(instance)
 	local path = safePath(instance)
 	local name = safeName(instance)
-	if path:find("PhantomOrbParts", 1, true) then
+	local lowerPath = string.lower(path)
+	local lowerName = string.lower(name)
+	if lowerPath:find("phantomorbparts", 1, true) then
 		return true
 	end
-	if path:find("PhantomEventParts", 1, true) and name:find("PhantomOrb", 1, true) then
+	if lowerPath:find("phantomorb", 1, true) then
+		return true
+	end
+	if lowerPath:find("phantomeventparts", 1, true) and (lowerName:find("phantomorb", 1, true) or lowerName == "hitbox") then
 		return true
 	end
 	if name:match("^PhantomOrb%d+$") then
