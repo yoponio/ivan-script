@@ -2,7 +2,7 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
-local scriptVersion = "v79.2-r8-final-polish"
+local scriptVersion = "v79.2-r9-respawn-travel-fix"
 
 print("--- INICIANDO OSAKA " .. scriptVersion .. " (FREE SENTINEL FIX) ---")
 
@@ -25,6 +25,7 @@ local quietLogMode = false
 
 local farmSpeed = 500
 local firstTripSpeed = 220
+local maxTravelTweenDuration = 18
 local startupStabilizeTime = 0.45
 local safeDepth = -6.5
 local depositRise = 0.08
@@ -51,6 +52,7 @@ local shieldRecoverStep = 0.08
 local shieldRecoverInterval = 0.30
 local shieldRecoverDelayAfterHit = 0.80
 local shieldExitStabilizeTime = 0.18
+local inventorySyncGracePeriod = 2.5
 
 local invCount = 0
 local basePos = nil
@@ -72,8 +74,9 @@ local pendingBrainrotSpawnCount = 0
 local pendingBrainrotSpawnSample = nil
 local brainrotSpawnLogWindow = 0.35
 local logEnabled = true
-local maxStoredLogs = 250
+local maxStoredLogs = 500
 local storedLogs = {}
+local logBatchIndex = 1
 local lastScanSummary = ""
 local lastSelectionSummary = ""
 local lastScanHint = ""
@@ -106,7 +109,6 @@ local mainButton = nil
 local towerButton = nil
 local shieldButton = nil
 local copyLogsButton = nil
-local clearLogsButton = nil
 local quietLogsButton = nil
 local shieldCFrame = nil
 local shieldBaseCFrame = nil
@@ -118,6 +120,7 @@ local characterPartStateBackup = {}
 local collisionModeLabel = "NORMAL"
 local baselineToolCounts = {}
 local farmToolTrackingReliable = false
+local inventorySyncBlockedUntil = 0
 local getCharacter
 local getHumanoid
 local getRoot
@@ -194,7 +197,7 @@ local function updateCopyLogsButtonState()
 		return
 	end
 
-	copyLogsButton.Text = "COPIAR LOGS (" .. tostring(#storedLogs) .. ")"
+	copyLogsButton.Text = "COPIAR Y LIMPIAR (" .. tostring(#storedLogs) .. ")"
 end
 
 local noisyLogEvents = {
@@ -239,8 +242,35 @@ local function getStoredLogDump()
 	return table.concat(storedLogs, "\n")
 end
 
+local function extractLogTimestamp(message)
+	if type(message) ~= "string" then
+		return "n/a"
+	end
+	local timestamp = string.match(message, "^%[OSAKA%]%[(.-)%]%[")
+	return timestamp or "n/a"
+end
+
+local function buildLogBatchPayload()
+	if #storedLogs == 0 then
+		return getStoredLogDump()
+	end
+
+	local firstTimestamp = extractLogTimestamp(storedLogs[1])
+	local lastTimestamp = extractLogTimestamp(storedLogs[#storedLogs])
+	local header = string.format(
+		"[OSAKA_LOG_BATCH] batch=%d entries=%d first=%s last=%s version=%s",
+		logBatchIndex,
+		#storedLogs,
+		tostring(firstTimestamp),
+		tostring(lastTimestamp),
+		tostring(scriptVersion)
+	)
+
+	return header .. "\n" .. table.concat(storedLogs, "\n")
+end
+
 local function copyLogsToClipboard(status)
-	local payload = getStoredLogDump()
+	local payload = buildLogBatchPayload()
 	local copyFns = {setclipboard, toclipboard}
 	local copied = false
 	local copyError = nil
@@ -265,10 +295,13 @@ local function copyLogsToClipboard(status)
 	end
 
 	if status then
-		status.Text = copied and ("LOGS COPIADOS: " .. tostring(#storedLogs)) or "NO SE PUDO COPIAR LOGS"
+		status.Text = copied and ("BATCH " .. tostring(logBatchIndex) .. " COPIADO: " .. tostring(#storedLogs)) or "NO SE PUDO COPIAR LOGS"
 	end
 
-	debugLog(copied and "LOG_COPY_OK" or "LOG_COPY_FAIL", copied and ("entries=" .. tostring(#storedLogs)) or tostring(copyError or "sin API de clipboard"))
+	debugLog(
+		copied and "LOG_COPY_OK" or "LOG_COPY_FAIL",
+		copied and ("batch=" .. tostring(logBatchIndex) .. " entries=" .. tostring(#storedLogs)) or tostring(copyError or "sin API de clipboard")
+	)
 	return copied
 end
 
@@ -282,6 +315,20 @@ local function clearStoredLogs(status)
 	if status then
 		status.Text = "LOGS LIMPIADOS"
 	end
+end
+
+local function copyAndClearLogs(status)
+	local copied = copyLogsToClipboard(status)
+	if copied then
+		local copiedBatch = logBatchIndex
+		clearStoredLogs(status)
+		logBatchIndex = logBatchIndex + 1
+		if status then
+			status.Text = "BATCH " .. tostring(copiedBatch) .. " COPIADO Y LIMPIADO"
+		end
+		debugLog("LOG_BATCH_RESET", "copiado batch=" .. tostring(copiedBatch) .. " siguiente=" .. tostring(logBatchIndex))
+	end
+	return copied
 end
 
 local function debugOnce(eventName, details, key)
@@ -374,6 +421,11 @@ local function getOwnedToolCounts()
 	return counts
 end
 
+local function blockInventorySync(reason, duration)
+	inventorySyncBlockedUntil = math.max(inventorySyncBlockedUntil, os.clock() + (duration or inventorySyncGracePeriod))
+	debugLog("INV_SYNC_BLOCK", string.format("until=%.3f reason=%s", inventorySyncBlockedUntil, tostring(reason or "n/a")))
+end
+
 local function captureBaselineTools()
 	baselineToolCounts = getOwnedToolCounts()
 	farmToolTrackingReliable = false
@@ -383,6 +435,7 @@ local function captureBaselineTools()
 	end
 	table.sort(parts)
 	debugLog("BASELINE", "herramientas base capturadas: " .. (#parts > 0 and table.concat(parts, ",") or "vacio"))
+	blockInventorySync("baseline", 1.2)
 end
 
 local function getFarmToolCount()
@@ -420,6 +473,9 @@ local function getEquippedToolCount()
 end
 
 local function syncInventoryCountFromTools()
+	if os.clock() < inventorySyncBlockedUntil then
+		return 0
+	end
 	local detectedCount = getFarmToolCount()
 	if detectedCount > 0 then
 		invCount = math.max(invCount, detectedCount)
@@ -1398,7 +1454,7 @@ local function tweenTo(goal, runToken)
 	end
 
 	local speed = firstTripPending and firstTripSpeed or farmSpeed
-	local duration = math.clamp(distance / speed, 0.05, 3)
+	local duration = math.clamp(distance / speed, 0.05, maxTravelTweenDuration)
 	debugLog("TRAVEL_TWEEN", string.format("distance=%.2f speed=%.2f duration=%.2f", distance, speed, duration))
 	local tween = TS:Create(flyValue, TweenInfo.new(duration, Enum.EasingStyle.Linear), {Value = goal})
 	local finished = false
@@ -1497,15 +1553,24 @@ local function ghostReturnTravel(targetPos, runToken)
 	return ghostTravel(targetPos, cruiseY, false, runToken)
 end
 
-local function emergencyRecover(status)
+local function emergencyRecover(status, runToken)
+	if runToken ~= nil and not isOperationValid(runToken) then
+		debugLog("RECOVER_ABORT", "operacion invalidada antes de recover")
+		return false
+	end
 	local root = getRoot()
 	if not root then
-		return
+		return false
 	end
 	local fallback = basePos and Vector3.new(basePos.X, math.max(basePos.Y - 1, root.Position.Y), basePos.Z)
 		or Vector3.new(root.Position.X, root.Position.Y, root.Position.Z)
-	ghostTravel(fallback)
+	local recovered = ghostTravel(fallback, nil, nil, runToken)
+	if runToken ~= nil and not isOperationValid(runToken) then
+		debugLog("RECOVER_ABORT", "operacion invalidada durante recover")
+		return false
+	end
 	status.Text = "RECUPERANDO RUTA..."
+	return recovered
 end
 
 local function getGoalDistance(goal)
@@ -2146,7 +2211,7 @@ Instance.new("UICorner", quietLogsBtn)
 quietLogsButton = quietLogsBtn
 
 local copyLogsBtn = Instance.new("TextButton", panel)
-copyLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
+copyLogsBtn.Size = UDim2.new(1, 0, 0, 24)
 copyLogsBtn.Position = UDim2.new(0, 0, 0, 114)
 copyLogsBtn.TextColor3 = Color3.new(1, 1, 1)
 copyLogsBtn.BackgroundColor3 = Color3.fromRGB(65, 90, 140)
@@ -2155,18 +2220,6 @@ copyLogsBtn.TextSize = 11
 copyLogsBtn.BorderSizePixel = 0
 Instance.new("UICorner", copyLogsBtn)
 copyLogsButton = copyLogsBtn
-
-local clearLogsBtn = Instance.new("TextButton", panel)
-clearLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
-clearLogsBtn.Position = UDim2.new(0.5, 2, 0, 114)
-clearLogsBtn.Text = "LIMPIAR LOGS"
-clearLogsBtn.TextColor3 = Color3.new(1, 1, 1)
-clearLogsBtn.BackgroundColor3 = Color3.fromRGB(110, 55, 55)
-clearLogsBtn.Font = Enum.Font.GothamBold
-clearLogsBtn.TextSize = 11
-clearLogsBtn.BorderSizePixel = 0
-Instance.new("UICorner", clearLogsBtn)
-clearLogsButton = clearLogsBtn
 
 local scroll = Instance.new("ScrollingFrame", frame)
 scroll.Size = UDim2.new(1, -12, 0, 146)
@@ -2254,7 +2307,6 @@ local function shutdownScript()
 	towerButton = nil
 	shieldButton = nil
 	copyLogsButton = nil
-	clearLogsButton = nil
 	quietLogsButton = nil
 
 	if sg then
@@ -2360,15 +2412,8 @@ copyLogsBtn.MouseButton1Click:Connect(function()
 	if scriptClosed then
 		return
 	end
-	copyLogsToClipboard(status)
+	copyAndClearLogs(status)
 	updateCopyLogsButtonState()
-end)
-
-clearLogsBtn.MouseButton1Click:Connect(function()
-	if scriptClosed then
-		return
-	end
-	clearStoredLogs(status)
 end)
 
 for _, name in ipairs(filterOrder) do
@@ -2573,6 +2618,7 @@ local function bindCharacter(btnRef, statusRef)
 				return
 			end
 			isRespawning = true
+			blockInventorySync("death", 3.5)
 			debugLog("DEATH", "personaje murio, watchMode=" .. tostring(watchMode))
 			stopFarm("RESPAWN DETECTADO - REARMANDO...", btnRef, statusRef, true)
 		end)
@@ -2600,8 +2646,10 @@ charAddedConn = LP.CharacterAdded:Connect(function()
 		local root = getRoot()
 		if root then
 			invalidateRunToken("characterAdded")
+			resetRunState()
 			basePos = root.Position
 			flyValue.Value = root.CFrame
+			blockInventorySync("characterAdded", 3.5)
 			captureBaselineTools()
 			armStartupStabilization("respawn")
 			isRespawning = false
@@ -2658,6 +2706,7 @@ btn.MouseButton1Click:Connect(function()
 		basePos = root.Position
 		flyValue.Value = root.CFrame
 		root.Anchored = false
+		blockInventorySync("watchOn", 2.0)
 		captureBaselineTools()
 		armStartupStabilization("watchOn")
 		resetRunState()
@@ -2767,7 +2816,7 @@ mainLoopThread = task.spawn(function()
 				local reached = ghostTravel(targetPos, nil, nil, runToken)
 				if not reached then
 					debugLog("TRAVEL_RECOVER", "fallo viaje principal")
-					emergencyRecover(status)
+					emergencyRecover(status, runToken)
 					return
 				end
 			end
