@@ -3,31 +3,67 @@ if not game:IsLoaded() then
 end
 
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local LP = Players.LocalPlayer
 
-local scannerVersion = "phantom-scanner-r1"
-local maxStoredLogs = 2000
-local storedLogs = {}
-local autoWatch = false
-local lastScanAt = 0
+local scannerVersion = "phantom-boat-scanner-r1"
+local maxStoredLogs = 1200
+local nearRadius = 140
+local watchEnabled = false
 local watchConnections = {}
+local storedLogs = {}
+local trackedPaths = {}
+
 local statusLabel
-local countLabel
-local copyButton
 local logBox
+local copyButton
 local watchButton
-local candidateCopyButton
-local saveButton
-local highlightButton
-local candidateLogs = {}
-local candidateEntries = {}
-local highlightObjects = {}
-local highlightEnabled = false
-local highlightRefreshQueued = false
-local logUiRefreshQueued = false
-local scanInProgress = false
-local scanBatchSize = 250
-local scoreInstance
+local radiusButton
+
+local radiusModes = {80, 140, 220}
+local radiusIndex = 2
+
+local interestingKeywords = {
+	"phantom",
+	"boat",
+	"ship",
+	"dock",
+	"harbor",
+	"harbour",
+	"port",
+	"raft",
+	"deliver",
+	"deposit",
+	"submit",
+	"turn in",
+	"return",
+	"orb",
+	"coin",
+	"wave",
+	"ghost",
+}
+
+local allowedClasses = {
+	Model = true,
+	Folder = true,
+	Part = true,
+	MeshPart = true,
+	UnionOperation = true,
+	Attachment = true,
+	ProximityPrompt = true,
+	ClickDetector = true,
+	BillboardGui = true,
+	SurfaceGui = true,
+	TextLabel = true,
+	TextButton = true,
+	StringValue = true,
+	NumberValue = true,
+	ObjectValue = true,
+	Trail = true,
+	ParticleEmitter = true,
+	Beam = true,
+	Highlight = true,
+}
 
 local function safeIsA(instance, className)
 	local ok, result = pcall(function()
@@ -52,242 +88,9 @@ local function getGuiParent()
 	return game:GetService("CoreGui")
 end
 
-local function trimArray(list, maxCount)
-	while #list > maxCount do
-		table.remove(list, 1)
-	end
-end
-
-local function appendCandidateLog(message)
-	table.insert(candidateLogs, message)
-	trimArray(candidateLogs, maxStoredLogs)
-	if candidateCopyButton then
-		candidateCopyButton.Text = "COPIAR CAND. (" .. tostring(#candidateLogs) .. ")"
-	end
-end
-
-local function refreshLogUi()
-	logUiRefreshQueued = false
-	if countLabel then
-		countLabel.Text = "LOGS: " .. tostring(#storedLogs)
-	end
-	if copyButton then
-		copyButton.Text = "COPIAR LOGS (" .. tostring(#storedLogs) .. ")"
-	end
-	if logBox then
-		local dump = table.concat(storedLogs, "\n")
-		logBox.Text = dump
-		pcall(function()
-			logBox.CursorPosition = #dump + 1
-		end)
-	end
-end
-
-local function scheduleLogUiRefresh()
-	if logUiRefreshQueued then
-		return
-	end
-	logUiRefreshQueued = true
-	task.delay(0.1, function()
-		local ok, err = xpcall(refreshLogUi, debug.traceback)
-		if not ok then
-			warn("[PHANTOM][UI_REFRESH_ERR] " .. tostring(err))
-		end
-	end)
-end
-
-local function yieldIfNeeded(index)
-	if index % scanBatchSize == 0 then
-		task.wait()
-	end
-end
-
-local function appendCandidateEntry(entry)
-	table.insert(candidateEntries, entry)
-	trimArray(candidateEntries, 160)
-end
-
-local function clearHighlights()
-	for _, highlight in ipairs(highlightObjects) do
-		pcall(function()
-			highlight:Destroy()
-		end)
-	end
-	clearArray(highlightObjects)
-end
-
-local function resetCandidateState()
-	clearArray(candidateLogs)
-	clearArray(candidateEntries)
-	clearHighlights()
-	if candidateCopyButton then
-		candidateCopyButton.Text = "COPIAR CAND. (0)"
-	end
-	if highlightButton then
-		highlightButton.Text = highlightEnabled and "RESALTAR: ON" or "RESALTAR: OFF"
-	end
-end
-
-local function copyPayloadToClipboard(payload)
-	local copyFns = {setclipboard, toclipboard}
-	for _, copyFn in ipairs(copyFns) do
-		if type(copyFn) == "function" then
-			local ok = pcall(copyFn, payload)
-			if ok then
-				return true
-			end
-		end
-	end
-	if type(Clipboard) == "table" and type(Clipboard.set) == "function" then
-		local ok = pcall(function()
-			Clipboard.set(payload)
-		end)
-		if ok then
-			return true
-		end
-	end
-	return false
-end
-
-local keywords = {
-	"phantom",
-	"orb",
-	"orbs",
-	"sphere",
-	"spirit",
-	"soul",
-	"ghost",
-	"boat",
-	"ship",
-	"dock",
-	"harbor",
-	"harbour",
-	"port",
-	"raft",
-	"deliver",
-	"submit",
-	"return",
-	"turn in",
-	"deposit",
-	"event",
-	"collect",
-	"pickup",
-	"pick up",
-}
-
-local includeClasses = {
-	Model = true,
-	Folder = true,
-	Part = true,
-	MeshPart = true,
-	UnionOperation = true,
-	Tool = true,
-	ProximityPrompt = true,
-	ClickDetector = true,
-	BillboardGui = true,
-	SurfaceGui = true,
-	TextLabel = true,
-	TextButton = true,
-	ImageLabel = true,
-	ImageButton = true,
-	Attachment = true,
-	ParticleEmitter = true,
-	Beam = true,
-}
-
-local function appendStoredLog(message)
-	table.insert(storedLogs, message)
-	if #storedLogs > maxStoredLogs then
-		table.remove(storedLogs, 1)
-	end
-	print(message)
-	if statusLabel then
-		statusLabel.Text = message
-	end
-	scheduleLogUiRefresh()
-end
-
-local function log(eventName, details)
-	local message = string.format("[PHANTOM][%.3f][%s] %s", os.clock(), tostring(eventName), tostring(details or ""))
-	appendStoredLog(message)
-end
-
-local function copyLogsToClipboard()
-	local payload = table.concat(storedLogs, "\n")
-	if copyPayloadToClipboard(payload) then
-		log("COPY", "logs copiados al portapapeles")
-		return true
-	end
-	log("COPY_FAIL", "sin API de clipboard")
-	return false
-end
-
-local function copyCandidatesToClipboard()
-	if #candidateLogs == 0 then
-		log("COPY_CAND_FAIL", "sin candidatos guardados")
-		return false
-	end
-	local payload = table.concat(candidateLogs, "\n")
-	if copyPayloadToClipboard(payload) then
-		log("COPY_CAND", "candidatos copiados al portapapeles")
-		return true
-	end
-	log("COPY_CAND_FAIL", "sin API de clipboard")
-	return false
-end
-
-local function saveLogsToFile()
-	if type(writefile) ~= "function" then
-		log("SAVE_FAIL", "writefile no disponible en este ejecutor")
-		return false
-	end
-	local timestamp = os.date("%Y%m%d_%H%M%S")
-	local fileName = "phantom_scan_" .. tostring(timestamp) .. ".txt"
-	local payload = table.concat(storedLogs, "\n")
-	local ok, err = pcall(function()
-		writefile(fileName, payload)
-	end)
-	if ok then
-		log("SAVE", "archivo guardado: " .. fileName)
-		return true
-	end
-	log("SAVE_FAIL", tostring(err or "error desconocido"))
-	return false
-end
-
-local function safeText(instance)
-	if not instance then
-		return ""
-	end
-	local chunks = {}
-	local okName, name = pcall(function()
-		return instance.Name
-	end)
-	if okName and type(name) == "string" then
-		table.insert(chunks, name)
-	end
-	pcall(function()
-		if type(instance.Text) == "string" and instance.Text ~= "" then
-			table.insert(chunks, instance.Text)
-		end
-	end)
-	pcall(function()
-		if type(instance.ActionText) == "string" and instance.ActionText ~= "" then
-			table.insert(chunks, instance.ActionText)
-		end
-	end)
-	pcall(function()
-		if type(instance.ObjectText) == "string" and instance.ObjectText ~= "" then
-			table.insert(chunks, instance.ObjectText)
-		end
-	end)
-	pcall(function()
-		local parent = instance.Parent
-		if parent and type(parent.Name) == "string" then
-			table.insert(chunks, parent.Name)
-		end
-	end)
-	return string.lower(table.concat(chunks, " | "))
+local function getRoot()
+	local character = LP.Character
+	return character and character:FindFirstChild("HumanoidRootPart") or nil
 end
 
 local function safePath(instance)
@@ -307,11 +110,11 @@ local function safeClassName(instance)
 	return ok and className or "Unknown"
 end
 
-local function safeWorldPosition(instance)
+local function getWorldPosition(instance)
 	if not instance then
 		return nil
 	end
-	local ok, value = pcall(function()
+	local ok, position = pcall(function()
 		if safeIsA(instance, "BasePart") then
 			return instance.Position
 		end
@@ -319,19 +122,19 @@ local function safeWorldPosition(instance)
 			return instance.WorldPosition
 		end
 		if safeIsA(instance, "Model") then
-			local pivot = instance:GetPivot()
-			return pivot.Position
+			return instance:GetPivot().Position
 		end
-		local part = instance:FindFirstAncestorWhichIsA("Model")
+		local model = instance:FindFirstAncestorWhichIsA("Model")
+		if model then
+			return model:GetPivot().Position
+		end
+		local part = instance:FindFirstAncestorWhichIsA("BasePart")
 		if part then
-			return part:GetPivot().Position
+			return part.Position
 		end
 		return nil
 	end)
-	if ok then
-		return value
-	end
-	return nil
+	return ok and position or nil
 end
 
 local function formatPosition(position)
@@ -341,255 +144,207 @@ local function formatPosition(position)
 	return string.format("pos=(%.1f, %.1f, %.1f)", position.X, position.Y, position.Z)
 end
 
-local function resolveHighlightAdornee(instance)
-	if not instance then
-		return nil
+local function appendStoredLog(message)
+	table.insert(storedLogs, message)
+	if #storedLogs > maxStoredLogs then
+		table.remove(storedLogs, 1)
 	end
-	if safeIsA(instance, "Model") or safeIsA(instance, "BasePart") then
-		return instance
+	print(message)
+	if statusLabel then
+		statusLabel.Text = message
 	end
-	local parent = instance.Parent
-	if safeIsA(parent, "Model") or safeIsA(parent, "BasePart") then
-		return parent
+	if copyButton then
+		copyButton.Text = "COPIAR LOGS (" .. tostring(#storedLogs) .. ")"
 	end
-	local ancestorModel = nil
-	pcall(function()
-		ancestorModel = instance:FindFirstAncestorWhichIsA("Model")
-	end)
-	if ancestorModel then
-		return ancestorModel
+	if logBox then
+		local dump = table.concat(storedLogs, "\n")
+		logBox.Text = dump
+		pcall(function()
+			logBox.CursorPosition = #dump + 1
+		end)
 	end
-	local ancestorPart = nil
-	pcall(function()
-		ancestorPart = instance:FindFirstAncestorWhichIsA("BasePart")
-	end)
-	return ancestorPart
 end
 
-local function refreshHighlights(silent)
-	clearHighlights()
-	if not highlightEnabled then
-		if highlightButton then
-			highlightButton.Text = "RESALTAR: OFF"
-			highlightButton.BackgroundColor3 = Color3.fromRGB(45, 50, 55)
-		end
-		return
-	end
-	local seen = {}
-	for index = 1, math.min(12, #candidateEntries) do
-		local entry = candidateEntries[index]
-		local adornee = resolveHighlightAdornee(entry.instance)
-		if adornee and not seen[adornee] then
-			seen[adornee] = true
-			local highlight = Instance.new("Highlight")
-			highlight.Name = "PhantomScannerHighlight"
-			highlight.FillColor = Color3.fromRGB(60, 190, 255)
-			highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
-			highlight.FillTransparency = 0.45
-			highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-			highlight.Adornee = adornee
-			highlight.Parent = workspace
-			table.insert(highlightObjects, highlight)
+local function log(eventName, details)
+	appendStoredLog(string.format("[BOAT][%.3f][%s] %s", os.clock(), tostring(eventName), tostring(details or "")))
+end
+
+local function copyLogsToClipboard()
+	local payload = table.concat(storedLogs, "\n")
+	local copyFns = {setclipboard, toclipboard}
+	for _, copyFn in ipairs(copyFns) do
+		if type(copyFn) == "function" then
+			local ok = pcall(copyFn, payload)
+			if ok then
+				log("COPY", "logs copiados")
+				return true
+			end
 		end
 	end
-	if highlightButton then
-		highlightButton.Text = highlightEnabled and "RESALTAR: ON" or "RESALTAR: OFF"
-		highlightButton.BackgroundColor3 = highlightEnabled and Color3.fromRGB(45, 100, 130) or Color3.fromRGB(45, 50, 55)
-	end
-	if not silent then
-		log("HIGHLIGHT", highlightEnabled and ("resaltados=" .. tostring(#highlightObjects)) or "resaltado desactivado")
-	end
-end
-
-local function scheduleHighlightRefresh()
-	if not highlightEnabled or highlightRefreshQueued then
-		return
-	end
-	highlightRefreshQueued = true
-	task.delay(0.25, function()
-		highlightRefreshQueued = false
-		local ok, err = xpcall(function()
-			refreshHighlights(true)
-		end, debug.traceback)
-		if not ok then
-			log("WATCH_HL_ERR", tostring(err))
+	if type(Clipboard) == "table" and type(Clipboard.set) == "function" then
+		local ok = pcall(function()
+			Clipboard.set(payload)
+		end)
+		if ok then
+			log("COPY", "logs copiados")
+			return true
 		end
-	end)
+	end
+	log("COPY_FAIL", "sin API de clipboard")
+	return false
 end
 
-local function processWatchedDescendant(sourceLabel, descendant)
-	local className = safeClassName(descendant)
-	if not includeClasses[className] then
-		return
-	end
-
-	local score, matched = scoreInstance(descendant)
-	if score <= 0 then
-		return
-	end
-
-	appendCandidateEntry({
-		instance = descendant,
-		score = score,
-		matched = matched,
-		className = className,
-		path = safePath(descendant),
-		position = safeWorldPosition(descendant),
-	})
-	appendCandidateLog(string.format("[PHANTOM][%.3f][%s] score=%d keywords=%s class=%s path=%s", os.clock(), sourceLabel, score, matched ~= "" and matched or "none", className, safePath(descendant)))
-	log(sourceLabel, string.format("score=%d keywords=%s class=%s path=%s", score, matched ~= "" and matched or "none", className, safePath(descendant)))
-	scheduleHighlightRefresh()
-end
-
-scoreInstance = function(instance)
-	if not instance then
+local function scoreText(text)
+	if type(text) ~= "string" or text == "" then
 		return 0, ""
 	end
-	local haystack = safeText(instance) .. " | " .. string.lower(safePath(instance))
+	local lowered = string.lower(text)
 	local score = 0
-	local matched = {}
-	for _, keyword in ipairs(keywords) do
-		if haystack:find(keyword, 1, true) then
+	local hits = {}
+	for _, keyword in ipairs(interestingKeywords) do
+		if lowered:find(keyword, 1, true) then
 			score = score + 5
-			table.insert(matched, keyword)
+			table.insert(hits, keyword)
 		end
 	end
+	return score, table.concat(hits, ",")
+end
+
+local function getInstanceText(instance)
+	if not instance then
+		return ""
+	end
+	local parts = {}
+	pcall(function()
+		table.insert(parts, tostring(instance.Name or ""))
+	end)
+	pcall(function()
+		if type(instance.Text) == "string" then
+			table.insert(parts, instance.Text)
+		end
+	end)
+	pcall(function()
+		if type(instance.ActionText) == "string" then
+			table.insert(parts, instance.ActionText)
+		end
+	end)
+	pcall(function()
+		if type(instance.ObjectText) == "string" then
+			table.insert(parts, instance.ObjectText)
+		end
+	end)
+	pcall(function()
+		local parent = instance.Parent
+		if parent then
+			table.insert(parts, tostring(parent.Name or ""))
+		end
+	end)
+	return table.concat(parts, " | ")
+end
+
+local function scoreInstance(instance)
+	local score = 0
+	local textScore, hits = scoreText(getInstanceText(instance) .. " | " .. safePath(instance))
+	score = score + textScore
 	if safeIsA(instance, "ProximityPrompt") then
 		score = score + 12
 	end
 	if safeIsA(instance, "ClickDetector") then
-		score = score + 7
-	end
-	if safeIsA(instance, "Tool") then
-		score = score + 4
-	end
-	if safeIsA(instance, "TextButton") then
-		score = score + 6
+		score = score + 8
 	end
 	if safeIsA(instance, "BillboardGui") or safeIsA(instance, "SurfaceGui") then
 		score = score + 3
 	end
-	return score, table.concat(matched, ",")
+	return score, hits
 end
 
-local function collectMatches(root, label, limit)
-	local results = {}
-	local descendants = root:GetDescendants()
-	for index, descendant in ipairs(descendants) do
-		local className = safeClassName(descendant)
-		if includeClasses[className] then
-			local score, matched = scoreInstance(descendant)
-			if score > 0 then
-				table.insert(results, {
-					instance = descendant,
-					score = score,
-					matched = matched,
-					className = className,
-					path = safePath(descendant),
-					position = safeWorldPosition(descendant),
-				})
-			end
-		end
-		yieldIfNeeded(index)
+local function isNearPlayer(instance)
+	local root = getRoot()
+	if not root then
+		return false, nil
 	end
-
-	table.sort(results, function(a, b)
-		if a.score ~= b.score then
-			return a.score > b.score
-		end
-		return a.path < b.path
-	end)
-
-	local summary = string.format("[PHANTOM][%.3f][SCAN_%s] candidatos=%d", os.clock(), tostring(label), #results)
-	appendCandidateLog(summary)
-	log("SCAN_" .. label, "candidatos=" .. tostring(#results))
-	for index = 1, math.min(limit or 30, #results) do
-		local entry = results[index]
-		appendCandidateEntry(entry)
-		appendCandidateLog(
-			string.format(
-				"[PHANTOM][%.3f][%s] #%d score=%d class=%s keywords=%s %s path=%s",
-				os.clock(),
-				label,
-				index,
-				entry.score,
-				entry.className,
-				entry.matched ~= "" and entry.matched or "none",
-				formatPosition(entry.position),
-				entry.path
-			)
-		)
-		log(
-			label,
-			string.format(
-				"#%d score=%d class=%s keywords=%s %s path=%s",
-				index,
-				entry.score,
-				entry.className,
-				entry.matched ~= "" and entry.matched or "none",
-				formatPosition(entry.position),
-				entry.path
-			)
-		)
+	local position = getWorldPosition(instance)
+	if not position then
+		return false, nil
 	end
-
-	return results
+	local distance = (root.Position - position).Magnitude
+	return distance <= nearRadius, distance
 end
 
-local function scanWorkspace(resetState)
-	if resetState then
-		resetCandidateState()
+local function shouldTrackInstance(instance)
+	local className = safeClassName(instance)
+	if not allowedClasses[className] then
+		return false, 0, "", nil
 	end
-	lastScanAt = os.clock()
-	collectMatches(workspace, "WORLD", 40)
-	local activeBrainrots = workspace:FindFirstChild("ActiveBrainrots")
-	if activeBrainrots then
-		collectMatches(activeBrainrots, "BRAINROTS", 25)
+	local score, hits = scoreInstance(instance)
+	local nearOk, distance = isNearPlayer(instance)
+	if nearOk then
+		score = score + 6
 	end
-	local boats = workspace:FindFirstChild("Boats") or workspace:FindFirstChild("Boat") or workspace:FindFirstChild("Ships")
-	if boats then
-		collectMatches(boats, "BOATS", 20)
+	if score <= 0 and not nearOk then
+		return false, score, hits, distance
 	end
-	refreshHighlights()
+	return true, score, hits, distance
 end
 
-local function scanGui(resetState)
-	if resetState then
-		resetCandidateState()
-	end
-	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
-	if not playerGui then
-		log("SCAN_GUI", "sin PlayerGui")
+local function logInstance(prefix, instance)
+	local track, score, hits, distance = shouldTrackInstance(instance)
+	if not track then
 		return
 	end
-	collectMatches(playerGui, "GUI", 40)
-	local backpack = LP:FindFirstChildOfClass("Backpack")
-	if backpack then
-		collectMatches(backpack, "BACKPACK", 20)
+	local path = safePath(instance)
+	local dedupeKey = prefix .. ":" .. path
+	if trackedPaths[dedupeKey] then
+		return
 	end
-	refreshHighlights()
+	trackedPaths[dedupeKey] = true
+	log(prefix, string.format("score=%d hits=%s dist=%s class=%s %s path=%s", score, hits ~= "" and hits or "none", distance and string.format("%.1f", distance) or "nil", safeClassName(instance), formatPosition(getWorldPosition(instance)), path))
+	if safeIsA(instance, "ProximityPrompt") then
+		log(prefix .. "_PROMPT", string.format("action=%s object=%s path=%s", tostring(instance.ActionText or ""), tostring(instance.ObjectText or ""), path))
+	end
+	local parent = instance.Parent
+	if parent and safePath(parent) ~= "nil" then
+		local parentPath = safePath(parent)
+		if not trackedPaths[prefix .. ":PARENT:" .. parentPath] then
+			trackedPaths[prefix .. ":PARENT:" .. parentPath] = true
+			log(prefix .. "_PARENT", string.format("class=%s %s path=%s", safeClassName(parent), formatPosition(getWorldPosition(parent)), parentPath))
+		end
+	end
 end
 
-local function inspectNearestPrompts(resetState)
-	if resetState then
-		resetCandidateState()
+local function scanNearbyWorld()
+	clearArray(storedLogs)
+	trackedPaths = {}
+	log("SCAN", "escaneando radio=" .. tostring(nearRadius))
+	local descendants = workspace:GetDescendants()
+	for index, descendant in ipairs(descendants) do
+		logInstance("WORLD", descendant)
+		yieldIfNeeded(index)
 	end
-	local character = LP.Character
-	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
+	if playerGui then
+		for index, descendant in ipairs(playerGui:GetDescendants()) do
+			logInstance("GUI", descendant)
+			yieldIfNeeded(index)
+		end
+	end
+	log("SCAN_OK", "escaneo barco completado")
+end
+
+local function scanNearestPrompts()
+	trackedPaths = {}
+	local root = getRoot()
 	if not root then
-		log("NEAR", "sin HumanoidRootPart")
+		log("NEAR_FAIL", "sin HumanoidRootPart")
 		return
 	end
 	local prompts = {}
-	local descendants = workspace:GetDescendants()
-	for index, descendant in ipairs(descendants) do
+	for index, descendant in ipairs(workspace:GetDescendants()) do
 		if safeIsA(descendant, "ProximityPrompt") then
-			local parent = descendant.Parent
-			local position = safeWorldPosition(parent) or safeWorldPosition(descendant)
+			local position = getWorldPosition(descendant) or getWorldPosition(descendant.Parent)
 			if position then
 				table.insert(prompts, {
-					prompt = descendant,
-					path = safePath(descendant),
+					instance = descendant,
 					distance = (root.Position - position).Magnitude,
 					position = position,
 				})
@@ -600,44 +355,11 @@ local function inspectNearestPrompts(resetState)
 	table.sort(prompts, function(a, b)
 		return a.distance < b.distance
 	end)
-	appendCandidateLog(string.format("[PHANTOM][%.3f][SCAN_NEAR] prompts=%d", os.clock(), #prompts))
-	log("NEAR", "prompts encontrados=" .. tostring(#prompts))
-	for index = 1, math.min(20, #prompts) do
+	log("NEAR", "prompts=" .. tostring(#prompts))
+	for index = 1, math.min(25, #prompts) do
 		local entry = prompts[index]
-		appendCandidateEntry({
-			instance = entry.prompt,
-			score = math.max(1, 100 - math.floor(entry.distance)),
-			matched = tostring(entry.prompt.ActionText or "") .. "," .. tostring(entry.prompt.ObjectText or ""),
-			className = "ProximityPrompt",
-			path = entry.path,
-			position = entry.position,
-		})
-		appendCandidateLog(
-			string.format(
-				"[PHANTOM][%.3f][NEAR] #%d dist=%.1f action=%s object=%s %s path=%s",
-				os.clock(),
-				index,
-				entry.distance,
-				tostring(entry.prompt.ActionText or ""),
-				tostring(entry.prompt.ObjectText or ""),
-				formatPosition(entry.position),
-				entry.path
-			)
-		)
-		log(
-			"NEAR",
-			string.format(
-				"#%d dist=%.1f action=%s object=%s %s path=%s",
-				index,
-				entry.distance,
-				tostring(entry.prompt.ActionText or ""),
-				tostring(entry.prompt.ObjectText or ""),
-				formatPosition(entry.position),
-				entry.path
-			)
-		)
+		log("NEAR", string.format("#%d dist=%.1f action=%s object=%s %s path=%s", index, entry.distance, tostring(entry.instance.ActionText or ""), tostring(entry.instance.ObjectText or ""), formatPosition(entry.position), safePath(entry.instance)))
 	end
-	refreshHighlights()
 end
 
 local function clearWatchConnections()
@@ -647,26 +369,27 @@ local function clearWatchConnections()
 		end)
 	end
 	clearArray(watchConnections)
-	autoWatch = false
+	watchEnabled = false
 	if watchButton then
-		watchButton.Text = "AUTO WATCH: OFF"
+		watchButton.Text = "WATCH BARCO: OFF"
 		watchButton.BackgroundColor3 = Color3.fromRGB(45, 50, 55)
 	end
 end
 
 local function armWatchers()
 	clearWatchConnections()
-	autoWatch = true
+	trackedPaths = {}
+	watchEnabled = true
 	if watchButton then
-		watchButton.Text = "AUTO WATCH: ON"
-		watchButton.BackgroundColor3 = Color3.fromRGB(50, 110, 70)
+		watchButton.Text = "WATCH BARCO: ON"
+		watchButton.BackgroundColor3 = Color3.fromRGB(55, 110, 70)
 	end
-	log("WATCH", "escucha activa de workspace y gui")
+	log("WATCH", "vigilando zona cercana del barco")
 
 	table.insert(watchConnections, workspace.DescendantAdded:Connect(function(descendant)
 		task.spawn(function()
 			local ok, err = xpcall(function()
-				processWatchedDescendant("ADD_WORLD", descendant)
+				logInstance("ADD_WORLD", descendant)
 			end, debug.traceback)
 			if not ok then
 				log("WATCH_ERR", tostring(err))
@@ -679,7 +402,7 @@ local function armWatchers()
 		table.insert(watchConnections, playerGui.DescendantAdded:Connect(function(descendant)
 			task.spawn(function()
 				local ok, err = xpcall(function()
-					processWatchedDescendant("ADD_GUI", descendant)
+					logInstance("ADD_GUI", descendant)
 				end, debug.traceback)
 				if not ok then
 					log("WATCH_ERR", tostring(err))
@@ -687,25 +410,30 @@ local function armWatchers()
 			end)
 		end))
 	end
+
+	table.insert(watchConnections, RunService.Heartbeat:Connect(function()
+		local root = getRoot()
+		if root and statusLabel then
+			statusLabel.Text = string.format("Boat watch | radio=%d | pos=(%.1f, %.1f, %.1f)", nearRadius, root.Position.X, root.Position.Y, root.Position.Z)
+		end
+	end))
 end
 
 local guiParent = getGuiParent()
-
-local oldGui = guiParent:FindFirstChild("PhantomScannerGui")
+local oldGui = guiParent:FindFirstChild("PhantomBoatScannerGui")
 if oldGui then
 	oldGui:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "PhantomScannerGui"
+screenGui.Name = "PhantomBoatScannerGui"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
 local frame = Instance.new("Frame")
-frame.Name = "Main"
 frame.Parent = screenGui
-frame.Size = UDim2.new(0, 460, 0, 420)
-frame.Position = UDim2.new(0.04, 0, 0.18, 0)
+frame.Size = UDim2.new(0, 470, 0, 390)
+frame.Position = UDim2.new(0.05, 0, 0.18, 0)
 frame.BackgroundColor3 = Color3.fromRGB(18, 20, 24)
 frame.Active = true
 frame.Draggable = true
@@ -717,7 +445,7 @@ title.Parent = frame
 title.Size = UDim2.new(1, -90, 0, 28)
 title.Position = UDim2.new(0, 10, 0, 8)
 title.BackgroundTransparency = 1
-title.Text = "PHANTOM EVENT SCANNER " .. scannerVersion
+title.Text = "PHANTOM BOAT SCANNER " .. scannerVersion
 title.TextColor3 = Color3.new(1, 1, 1)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 14
@@ -737,23 +465,20 @@ Instance.new("UICorner", closeButton)
 
 statusLabel = Instance.new("TextLabel")
 statusLabel.Parent = frame
-statusLabel.Size = UDim2.new(1, -20, 0, 18)
+statusLabel.Size = UDim2.new(1, -20, 0, 20)
 statusLabel.Position = UDim2.new(0, 10, 0, 42)
 statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "Listo para escanear workspace, gui y prompts cercanos"
+statusLabel.Text = "Acercate al barco con un orbe y usa WATCH BARCO"
 statusLabel.TextColor3 = Color3.fromRGB(215, 220, 225)
 statusLabel.Font = Enum.Font.Gotham
 statusLabel.TextSize = 12
 statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-local buttonY = 68
-
-local function makeButton(name, text, x, width)
+local function makeButton(text, x, y, width)
 	local button = Instance.new("TextButton")
-	button.Name = name
 	button.Parent = frame
 	button.Size = UDim2.new(0, width, 0, 28)
-	button.Position = UDim2.new(0, x, 0, buttonY)
+	button.Position = UDim2.new(0, x, 0, y)
 	button.BackgroundColor3 = Color3.fromRGB(45, 50, 55)
 	button.Text = text
 	button.TextColor3 = Color3.new(1, 1, 1)
@@ -764,133 +489,66 @@ local function makeButton(name, text, x, width)
 	return button
 end
 
-local worldButton = makeButton("WorldScan", "SCAN WORLD", 10, 100)
-local guiButton = makeButton("GuiScan", "SCAN GUI", 116, 90)
-local nearButton = makeButton("NearScan", "PROMPTS CERCA", 212, 110)
-watchButton = makeButton("Watch", "AUTO WATCH: OFF", 328, 122)
+local scanButton = makeButton("SCAN CERCA", 10, 70, 100)
+local promptButton = makeButton("PROMPTS CERCA", 116, 70, 120)
+watchButton = makeButton("WATCH BARCO: OFF", 242, 70, 140)
+radiusButton = makeButton("RADIO: 140", 388, 70, 72)
+copyButton = makeButton("COPIAR LOGS (0)", 10, 104, 140)
 
-copyButton = makeButton("Copy", "COPIAR LOGS (0)", 10, 140)
-copyButton.Position = UDim2.new(0, 10, 0, buttonY + 34)
-
-local fullButton = makeButton("FullScan", "FULL SCAN", 156, 92)
-fullButton.Position = UDim2.new(0, 156, 0, buttonY + 34)
-
-local clearButton = makeButton("Clear", "LIMPIAR", 254, 80)
-clearButton.Position = UDim2.new(0, 254, 0, buttonY + 34)
-
-candidateCopyButton = makeButton("CopyCandidates", "COPIAR CAND. (0)", 10, 140)
-candidateCopyButton.Position = UDim2.new(0, 10, 0, buttonY + 68)
-
-saveButton = makeButton("SaveLogs", "GUARDAR LOGS", 156, 110)
-saveButton.Position = UDim2.new(0, 156, 0, buttonY + 68)
-
-highlightButton = makeButton("Highlight", "RESALTAR: OFF", 272, 128)
-highlightButton.Position = UDim2.new(0, 272, 0, buttonY + 68)
-
-countLabel = Instance.new("TextLabel")
-countLabel.Parent = frame
-countLabel.Size = UDim2.new(0, 110, 0, 20)
-countLabel.Position = UDim2.new(0, 340, 0, buttonY + 38)
-countLabel.BackgroundTransparency = 1
-countLabel.Text = "LOGS: 0"
-countLabel.TextColor3 = Color3.fromRGB(215, 220, 225)
-countLabel.Font = Enum.Font.GothamBold
-countLabel.TextSize = 12
-countLabel.TextXAlignment = Enum.TextXAlignment.Right
-
-local keywordLabel = Instance.new("TextLabel")
-keywordLabel.Parent = frame
-keywordLabel.Size = UDim2.new(1, -20, 0, 34)
-keywordLabel.Position = UDim2.new(0, 10, 0, buttonY + 104)
-keywordLabel.BackgroundTransparency = 1
-keywordLabel.Text = "Keywords: phantom, orb, sphere, spirit, ghost, boat, ship, dock, harbor, deliver, submit, return, deposit, collect"
-keywordLabel.TextWrapped = true
-keywordLabel.TextColor3 = Color3.fromRGB(180, 190, 200)
-keywordLabel.Font = Enum.Font.Gotham
-keywordLabel.TextSize = 11
-keywordLabel.TextXAlignment = Enum.TextXAlignment.Left
-keywordLabel.TextYAlignment = Enum.TextYAlignment.Top
+local info = Instance.new("TextLabel")
+info.Parent = frame
+info.Size = UDim2.new(1, -20, 0, 34)
+info.Position = UDim2.new(0, 10, 0, 140)
+info.BackgroundTransparency = 1
+info.TextWrapped = true
+info.Text = "Uso: 1) Ve al barco. 2) Activa WATCH BARCO. 3) Lleva un orbe Phantom. 4) Sueltalo/entregalo encima del barco. 5) Copia logs."
+info.TextColor3 = Color3.fromRGB(185, 190, 198)
+info.Font = Enum.Font.Gotham
+info.TextSize = 11
+info.TextXAlignment = Enum.TextXAlignment.Left
+info.TextYAlignment = Enum.TextYAlignment.Top
 
 logBox = Instance.new("TextBox")
 logBox.Parent = frame
-logBox.Size = UDim2.new(1, -20, 1, -(buttonY + 154))
-logBox.Position = UDim2.new(0, 10, 0, buttonY + 144)
+logBox.Size = UDim2.new(1, -20, 1, -186)
+logBox.Position = UDim2.new(0, 10, 0, 176)
 logBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
 logBox.TextColor3 = Color3.fromRGB(220, 225, 230)
 logBox.Font = Enum.Font.Code
 logBox.TextSize = 12
-logBox.TextWrapped = false
 logBox.MultiLine = true
 logBox.ClearTextOnFocus = false
 logBox.TextEditable = false
+logBox.TextWrapped = false
 logBox.TextXAlignment = Enum.TextXAlignment.Left
 logBox.TextYAlignment = Enum.TextYAlignment.Top
-logBox.Text = ""
 logBox.BorderSizePixel = 0
+logBox.Text = ""
 Instance.new("UICorner", logBox)
 
-worldButton.MouseButton1Click:Connect(function()
-	scanWorkspace(true)
-end)
-guiButton.MouseButton1Click:Connect(function()
-	scanGui(true)
-end)
-nearButton.MouseButton1Click:Connect(function()
-	inspectNearestPrompts(true)
-end)
-fullButton.MouseButton1Click:Connect(function()
-	if scanInProgress then
-		log("FULL_BUSY", "ya hay un escaneo completo en curso")
-		return
-	end
-	scanInProgress = true
-	fullButton.Text = "ESCANEANDO..."
-	fullButton.BackgroundColor3 = Color3.fromRGB(90, 80, 45)
-	log("FULL", "iniciando escaneo completo")
-	task.spawn(function()
-		local ok, err = xpcall(function()
-			resetCandidateState()
-			scanWorkspace(false)
-			task.wait()
-			scanGui(false)
-			task.wait()
-			inspectNearestPrompts(false)
-			log("FULL_OK", "escaneo completo terminado")
-		end, debug.traceback)
-		scanInProgress = false
-		fullButton.Text = "FULL SCAN"
-		fullButton.BackgroundColor3 = Color3.fromRGB(45, 50, 55)
-		if not ok then
-			log("FULL_ERR", tostring(err))
-		end
-	end)
-end)
-copyButton.MouseButton1Click:Connect(copyLogsToClipboard)
-candidateCopyButton.MouseButton1Click:Connect(copyCandidatesToClipboard)
-saveButton.MouseButton1Click:Connect(saveLogsToFile)
-clearButton.MouseButton1Click:Connect(function()
-	clearArray(storedLogs)
-	resetCandidateState()
-	appendStoredLog("[PHANTOM][0.000][RESET] logs limpiados")
-end)
-highlightButton.MouseButton1Click:Connect(function()
-	highlightEnabled = not highlightEnabled
-	refreshHighlights()
-end)
+scanButton.MouseButton1Click:Connect(scanNearbyWorld)
+promptButton.MouseButton1Click:Connect(scanNearestPrompts)
 watchButton.MouseButton1Click:Connect(function()
-	if autoWatch then
+	if watchEnabled then
 		clearWatchConnections()
-		log("WATCH", "escucha desactivada")
+		log("WATCH", "desactivado")
 	else
 		armWatchers()
 	end
 end)
-
+radiusButton.MouseButton1Click:Connect(function()
+	radiusIndex = radiusIndex + 1
+	if radiusIndex > #radiusModes then
+		radiusIndex = 1
+	end
+	nearRadius = radiusModes[radiusIndex]
+	radiusButton.Text = "RADIO: " .. tostring(nearRadius)
+	log("RADIUS", tostring(nearRadius))
+end)
+copyButton.MouseButton1Click:Connect(copyLogsToClipboard)
 closeButton.MouseButton1Click:Connect(function()
 	clearWatchConnections()
-	clearHighlights()
 	screenGui:Destroy()
 end)
 
-log("BOOT", "scanner listo version=" .. scannerVersion)
-log("TIP", "usa FULL SCAN cuando empiece el evento y luego AUTO WATCH")
+log("BOOT", "scanner de barco listo")
