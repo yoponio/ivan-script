@@ -23,6 +23,7 @@ local candidateLogs = {}
 local candidateEntries = {}
 local highlightObjects = {}
 local highlightEnabled = false
+local highlightRefreshQueued = false
 
 local function safeIsA(instance, className)
 	local ok, result = pcall(function()
@@ -337,9 +338,13 @@ local function resolveHighlightAdornee(instance)
 	return ancestorPart
 end
 
-local function refreshHighlights()
+local function refreshHighlights(silent)
 	clearHighlights()
 	if not highlightEnabled then
+		if highlightButton then
+			highlightButton.Text = "RESALTAR: OFF"
+			highlightButton.BackgroundColor3 = Color3.fromRGB(45, 50, 55)
+		end
 		return
 	end
 	local seen = {}
@@ -363,7 +368,49 @@ local function refreshHighlights()
 		highlightButton.Text = highlightEnabled and "RESALTAR: ON" or "RESALTAR: OFF"
 		highlightButton.BackgroundColor3 = highlightEnabled and Color3.fromRGB(45, 100, 130) or Color3.fromRGB(45, 50, 55)
 	end
-	log("HIGHLIGHT", highlightEnabled and ("resaltados=" .. tostring(#highlightObjects)) or "resaltado desactivado")
+	if not silent then
+		log("HIGHLIGHT", highlightEnabled and ("resaltados=" .. tostring(#highlightObjects)) or "resaltado desactivado")
+	end
+end
+
+local function scheduleHighlightRefresh()
+	if not highlightEnabled or highlightRefreshQueued then
+		return
+	end
+	highlightRefreshQueued = true
+	task.delay(0.25, function()
+		highlightRefreshQueued = false
+		local ok, err = xpcall(function()
+			refreshHighlights(true)
+		end, debug.traceback)
+		if not ok then
+			log("WATCH_HL_ERR", tostring(err))
+		end
+	end)
+end
+
+local function processWatchedDescendant(sourceLabel, descendant)
+	local className = safeClassName(descendant)
+	if not includeClasses[className] then
+		return
+	end
+
+	local score, matched = scoreInstance(descendant)
+	if score <= 0 then
+		return
+	end
+
+	appendCandidateEntry({
+		instance = descendant,
+		score = score,
+		matched = matched,
+		className = className,
+		path = safePath(descendant),
+		position = safeWorldPosition(descendant),
+	})
+	appendCandidateLog(string.format("[PHANTOM][%.3f][%s] score=%d keywords=%s class=%s path=%s", os.clock(), sourceLabel, score, matched ~= "" and matched or "none", className, safePath(descendant)))
+	log(sourceLabel, string.format("score=%d keywords=%s class=%s path=%s", score, matched ~= "" and matched or "none", className, safePath(descendant)))
+	scheduleHighlightRefresh()
 end
 
 local function scoreInstance(instance)
@@ -563,7 +610,9 @@ end
 
 local function clearWatchConnections()
 	for _, connection in ipairs(watchConnections) do
-		connection:Disconnect()
+		pcall(function()
+			connection:Disconnect()
+		end)
 	end
 	clearArray(watchConnections)
 	autoWatch = false
@@ -583,39 +632,27 @@ local function armWatchers()
 	log("WATCH", "escucha activa de workspace y gui")
 
 	table.insert(watchConnections, workspace.DescendantAdded:Connect(function(descendant)
-		local score, matched = scoreInstance(descendant)
-		if score > 0 then
-			appendCandidateEntry({
-				instance = descendant,
-				score = score,
-				matched = matched,
-				className = safeClassName(descendant),
-				path = safePath(descendant),
-				position = safeWorldPosition(descendant),
-			})
-			appendCandidateLog(string.format("[PHANTOM][%.3f][ADD_WORLD] score=%d keywords=%s class=%s path=%s", os.clock(), score, matched ~= "" and matched or "none", safeClassName(descendant), safePath(descendant)))
-			log("ADD_WORLD", string.format("score=%d keywords=%s class=%s path=%s", score, matched ~= "" and matched or "none", safeClassName(descendant), safePath(descendant)))
-			refreshHighlights()
-		end
+		task.spawn(function()
+			local ok, err = xpcall(function()
+				processWatchedDescendant("ADD_WORLD", descendant)
+			end, debug.traceback)
+			if not ok then
+				log("WATCH_ERR", tostring(err))
+			end
+		end)
 	end))
 
 	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
 	if playerGui then
 		table.insert(watchConnections, playerGui.DescendantAdded:Connect(function(descendant)
-			local score, matched = scoreInstance(descendant)
-			if score > 0 then
-				appendCandidateEntry({
-					instance = descendant,
-					score = score,
-					matched = matched,
-					className = safeClassName(descendant),
-					path = safePath(descendant),
-					position = safeWorldPosition(descendant),
-				})
-				appendCandidateLog(string.format("[PHANTOM][%.3f][ADD_GUI] score=%d keywords=%s class=%s path=%s", os.clock(), score, matched ~= "" and matched or "none", safeClassName(descendant), safePath(descendant)))
-				log("ADD_GUI", string.format("score=%d keywords=%s class=%s path=%s", score, matched ~= "" and matched or "none", safeClassName(descendant), safePath(descendant)))
-				refreshHighlights()
-			end
+			task.spawn(function()
+				local ok, err = xpcall(function()
+					processWatchedDescendant("ADD_GUI", descendant)
+				end, debug.traceback)
+				if not ok then
+					log("WATCH_ERR", tostring(err))
+				end
+			end)
 		end))
 	end
 end
