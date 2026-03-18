@@ -353,6 +353,22 @@ local function getFarmToolCount()
 	return total
 end
 
+local function getEquippedToolCount()
+	local total = 0
+	local character = LP.Character
+	if not character then
+		return 0
+	end
+
+	for _, child in ipairs(character:GetChildren()) do
+		if child:IsA("Tool") then
+			total = total + 1
+		end
+	end
+
+	return total
+end
+
 local function syncInventoryCountFromTools()
 	local detectedCount = getFarmToolCount()
 	if detectedCount > 0 then
@@ -373,7 +389,7 @@ local function forceUnequipFarmTools(humanoid)
 		return false
 	end
 
-	local beforeCount = getFarmToolCount()
+	local beforeCount = getEquippedToolCount()
 	if beforeCount <= 0 then
 		return true
 	end
@@ -386,14 +402,14 @@ local function forceUnequipFarmTools(humanoid)
 
 	local deadline = os.clock() + 0.45
 	while os.clock() < deadline do
-		if getFarmToolCount() < beforeCount then
+		if getEquippedToolCount() < beforeCount then
 			debugLog("UNEQUIP", "ok")
 			return true
 		end
 		task.wait(0.05)
 	end
 
-	local result = getFarmToolCount() < beforeCount
+	local result = getEquippedToolCount() < beforeCount
 	debugLog("UNEQUIP", result and "ok tardio" or "sin cambios")
 	return result
 end
@@ -1336,14 +1352,6 @@ local function getReturnWallWaypoint()
 	return Vector3.new(basePos.X, tunnelY, basePos.Z + (direction * returnWallOffset))
 end
 
-local function isNearBase()
-	local root = getRoot()
-	if not root or not basePos then
-		return false
-	end
-	return (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(basePos.X, 0, basePos.Z)).Magnitude <= 6
-end
-
 local function moveReturnStage(goal, status, recoveryText, runToken)
 	local reached = tweenTo(goal, runToken)
 	if reached and getGoalDistance(goal) <= returnGoalTolerance then
@@ -1631,12 +1639,10 @@ local function returnToBase(status, reasonText, runToken)
 		return false
 	end
 
-	local healthBeforeSurface = humanoid.Health
 	local wallWaypoint = getReturnWallWaypoint()
 	local tunnelStage = CFrame.new(basePos.X, basePos.Y + returnApproachDepth, basePos.Z)
 	local stageOne = CFrame.new(basePos.X, basePos.Y + returnSettleDepth, basePos.Z)
 	local stageTwo = CFrame.new(basePos.X, basePos.Y + returnHoverDepth, basePos.Z)
-	local finalStage = CFrame.new(basePos.X, basePos.Y + depositRise, basePos.Z)
 
 	if wallWaypoint then
 		debugLog("RETURN_STAGE", "wallWaypoint")
@@ -1650,40 +1656,26 @@ local function returnToBase(status, reasonText, runToken)
 	moveReturnStage(stageOne, status, "BAJANDO AL RETORNO...", runToken)
 	task.wait(0.08)
 	debugLog("RETURN_STAGE", "stageTwo")
-	moveReturnStage(stageTwo, status, "ACERCANDO AL DEPOSITO...", runToken)
+	moveReturnStage(stageTwo, status, "LLEGANDO A HOME...", runToken)
 	task.wait(0.08)
-	debugLog("RETURN_STAGE", "homeStage")
-	moveReturnStage(finalStage, status, "LLEGANDO A HOME...", runToken)
 
-	root.AssemblyLinearVelocity = Vector3.zero
-	root.AssemblyAngularVelocity = Vector3.zero
-	task.wait(0.20)
-
-	if humanoid.Health > 0 and humanoid.Health < healthBeforeSurface - returnDamageThreshold then
-		flyValue.Value = stageOne
-		root.AssemblyLinearVelocity = Vector3.zero
-		root.AssemblyAngularVelocity = Vector3.zero
-		status.Text = "RETORNO AJUSTADO"
-		debugLog("RETURN_DAMAGE", "ajustando por daño en superficie")
-		task.wait(0.20)
-	end
-
+	status.Text = "DESCARGANDO EN HOME..."
+	local unequipped = forceUnequipFarmTools(humanoid)
+	task.wait(0.12)
+	captureBaselineTools()
+	invCount = 0
+	sessionGrabCount = 0
 	grabAttempts = 0
 	currentTarget = nil
 	blacklist = {}
 	refreshTargets(true)
 	returnLocked = false
-	debugLog("RETURN_OK", isNearBase() and "home alcanzado" or "home aproximado")
-	if sessionGrabCount >= returnAt then
-		status.Text = "HOME | LIMITE ALCANZADO"
-		debugLog("SESSION_LIMIT", "total=" .. tostring(sessionGrabCount) .. "/" .. tostring(returnAt))
-	else
-		status.Text = "HOME | ESPERANDO"
-	end
+	status.Text = "HOME OK"
+	debugLog("RETURN_OK", "home reached unequip=" .. tostring(unequipped) .. " tools=" .. tostring(getFarmToolCount()))
 
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
-	releaseAutopilot(status.Text, status)
+	releaseAutopilot("VIGILANDO LIBRE...", status)
 	isReturning = false
 	if mainButton then
 		updateButtonState(mainButton)
@@ -2233,16 +2225,6 @@ mainLoopThread = task.spawn(function()
 
 			updateReturnLimit()
 			local carryCount = getEffectiveCarryCount()
-			if sessionGrabCount >= returnAt then
-				debugLog("SESSION_LIMIT", "esperando home total=" .. tostring(sessionGrabCount) .. "/" .. tostring(returnAt))
-				if not isNearBase() and (carryCount > 0 or returnLocked) and not isReturning then
-					returnLocked = true
-					returnToBase(status, "VOLVIENDO A HOME...", runToken)
-				else
-					releaseAutopilot("HOME | LIMITE ALCANZADO", status)
-				end
-				return
-			end
 
 			local humanoid = getHumanoid()
 			local root = getRoot()
@@ -2260,7 +2242,7 @@ mainLoopThread = task.spawn(function()
 			if (returnLocked or carryCount >= returnAt) and not isReturning then
 				debugLog("LOOP_RETURN", "returnLocked=" .. tostring(returnLocked) .. " inv=" .. tostring(invCount) .. " carry=" .. tostring(carryCount))
 				if os.clock() - lastDepositAttempt < depositRetryCooldown then
-					releaseAutopilot("ESPERANDO REGRESO...", status)
+					releaseAutopilot("ESPERANDO HOME...", status)
 					return
 				end
 				returnLocked = true
@@ -2345,7 +2327,7 @@ mainLoopThread = task.spawn(function()
 				refreshTargets(true)
 				status.Text = "AGARRADO: " .. tostring(invCount) .. "/" .. tostring(returnAt)
 
-				if sessionGrabCount >= returnAt or returnLocked or invCount >= returnAt then
+				if returnLocked or invCount >= returnAt then
 					debugLog("RETURN_TRIGGER", "limite alcanzado")
 					returnToBase(status, "VOLVIENDO A HOME...", runToken)
 				else
