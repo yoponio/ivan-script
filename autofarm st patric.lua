@@ -62,7 +62,7 @@ local stPatricUnconfirmedDrainWindow = 1.4
 local stPatricRepromptDelay = 0.35
 local stPatricHoldSnapDistance = 3.5
 local stPatricImmediateRepromptDelay = 0.18
-local stPatricConfirmTimeout = 1.6
+local stPatricConfirmTimeout = 5.2
 local stPatricAssumeSubmitDelay = 0.45
 
 local invCount = 0
@@ -745,6 +745,14 @@ end
 
 local function syncInventoryCountFromTools()
 	local detectedCount = getFarmToolCount()
+	if detectedCount > returnAt then
+		farmToolTrackingReliable = false
+		debugLog("TOOL_SYNC_SKIP", "detected=" .. tostring(detectedCount) .. " limite=" .. tostring(returnAt))
+		if invCount <= 0 then
+			returnLocked = false
+		end
+		return 0
+	end
 	if detectedCount > 0 then
 		invCount = math.max(invCount, detectedCount)
 	end
@@ -2598,7 +2606,7 @@ local function confirmStPatricDialog(status)
 			end
 		end
 
-		task.wait(0.1)
+		task.wait(0.05)
 	end
 
 	debugLog("STP_CONFIRM_FAIL", "yes button no detectado")
