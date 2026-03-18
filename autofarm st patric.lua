@@ -2927,381 +2927,389 @@ local function bindBrainrotWatcher()
 	end)
 end
 
-local guiParent = pcall(function()
-	return gethui()
-end) and gethui() or game:GetService("CoreGui")
+local sg
+local btn
+local status
+local limitValue
+local updateReturnLimit
 
-local oldGui = guiParent:FindFirstChild("OsakaV79Fix")
-if oldGui then
-	oldGui:Destroy()
-end
+do
+	local guiParent = pcall(function()
+		return gethui()
+	end) and gethui() or game:GetService("CoreGui")
 
-local sg = Instance.new("ScreenGui")
-sg.Name = "OsakaV79Fix"
-sg.ResetOnSpawn = false
-sg.Parent = guiParent
-
-local frame = Instance.new("Frame", sg)
-frame.Size = UDim2.new(0, 172, 0, 38)
-frame.Position = UDim2.new(0.05, 0, 0.3, 0)
-frame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
-frame.Active = true
-frame.Draggable = true
-Instance.new("UICorner", frame)
-
-local expanded = false
-local filtersExpanded = false
-
-local towerBtn = Instance.new("TextButton", sg)
-towerBtn.Size = UDim2.new(0, 84, 0, 24)
-towerBtn.Position = UDim2.new(0.05, 0, 0.3, -28)
-towerBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
-towerBtn.Font = Enum.Font.GothamBold
-towerBtn.TextSize = 11
-towerBtn.BorderSizePixel = 0
-Instance.new("UICorner", towerBtn)
-towerBtn.Visible = false
-towerButton = towerBtn
-
-local shieldBtn = Instance.new("TextButton", sg)
-shieldBtn.Size = UDim2.new(0, 84, 0, 24)
-shieldBtn.Position = UDim2.new(0.05, 88, 0.3, -28)
-shieldBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
-shieldBtn.Font = Enum.Font.GothamBold
-shieldBtn.TextSize = 11
-shieldBtn.BorderSizePixel = 0
-Instance.new("UICorner", shieldBtn)
-shieldBtn.Visible = false
-shieldButton = shieldBtn
-
-local btn = Instance.new("TextButton", frame)
-btn.Size = UDim2.new(1, -74, 0, 32)
-btn.Position = UDim2.new(0, 6, 0, 3)
-btn.TextColor3 = Color3.new(1, 1, 1)
-btn.Font = Enum.Font.GothamBold
-btn.TextSize = 13
-Instance.new("UICorner", btn)
-mainButton = btn
-
-local expandBtn = Instance.new("TextButton", frame)
-expandBtn.Size = UDim2.new(0, 30, 0, 32)
-expandBtn.Position = UDim2.new(1, -68, 0, 3)
-expandBtn.Text = "+"
-expandBtn.TextColor3 = Color3.new(1, 1, 1)
-expandBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
-expandBtn.Font = Enum.Font.GothamBold
-expandBtn.TextSize = 18
-Instance.new("UICorner", expandBtn)
-
-local closeBtn = Instance.new("TextButton", frame)
-closeBtn.Size = UDim2.new(0, 30, 0, 32)
-closeBtn.Position = UDim2.new(1, -36, 0, 3)
-closeBtn.Text = "X"
-closeBtn.TextColor3 = Color3.new(1, 1, 1)
-closeBtn.BackgroundColor3 = Color3.fromRGB(120, 45, 45)
-closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 14
-Instance.new("UICorner", closeBtn)
-
-local panel = Instance.new("Frame", frame)
-panel.Position = UDim2.new(0, 6, 0, 40)
-panel.Size = UDim2.new(1, -12, 0, 140)
-panel.BackgroundTransparency = 1
-panel.Visible = false
-
-local status = Instance.new("TextLabel", panel)
-status.Size = UDim2.new(1, 0, 0, 20)
-status.Position = UDim2.new(0, 0, 0, 0)
-status.Text = "ST PATRIC: ESPERANDO"
-status.TextColor3 = Color3.new(1, 1, 1)
-status.BackgroundTransparency = 1
-status.Font = Enum.Font.Gotham
-status.TextSize = 12
-status.TextXAlignment = Enum.TextXAlignment.Left
-
-local limitLabel = Instance.new("TextLabel", panel)
-limitLabel.Size = UDim2.new(1, 0, 0, 18)
-limitLabel.Position = UDim2.new(0, 0, 0, 24)
-limitLabel.Text = "LIMITE"
-limitLabel.TextColor3 = Color3.new(0.8, 0.8, 0.8)
-limitLabel.BackgroundTransparency = 1
-limitLabel.Font = Enum.Font.Gotham
-limitLabel.TextSize = 11
-limitLabel.TextXAlignment = Enum.TextXAlignment.Left
-
-local limitRow = Instance.new("Frame", panel)
-limitRow.Size = UDim2.new(1, 0, 0, 28)
-limitRow.Position = UDim2.new(0, 0, 0, 46)
-limitRow.BackgroundTransparency = 1
-
-local limitMinus = Instance.new("TextButton", limitRow)
-limitMinus.Size = UDim2.new(0, 28, 0, 28)
-limitMinus.Position = UDim2.new(0, 0, 0, 0)
-limitMinus.Text = "-"
-limitMinus.TextColor3 = Color3.new(1, 1, 1)
-limitMinus.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
-limitMinus.Font = Enum.Font.GothamBold
-limitMinus.TextSize = 16
-Instance.new("UICorner", limitMinus)
-
-local limitValue = Instance.new("TextLabel", limitRow)
-limitValue.Size = UDim2.new(1, -64, 0, 28)
-limitValue.Position = UDim2.new(0, 32, 0, 0)
-limitValue.Text = tostring(returnAt)
-limitValue.TextColor3 = Color3.new(1, 1, 1)
-limitValue.BackgroundColor3 = Color3.fromRGB(22, 24, 28)
-limitValue.Font = Enum.Font.GothamBold
-limitValue.TextSize = 13
-Instance.new("UICorner", limitValue)
-
-local limitPlus = Instance.new("TextButton", limitRow)
-limitPlus.Size = UDim2.new(0, 28, 0, 28)
-limitPlus.Position = UDim2.new(1, -28, 0, 0)
-limitPlus.Text = "+"
-limitPlus.TextColor3 = Color3.new(1, 1, 1)
-limitPlus.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
-limitPlus.Font = Enum.Font.GothamBold
-limitPlus.TextSize = 16
-Instance.new("UICorner", limitPlus)
-
-local filtersBtn = Instance.new("TextButton", panel)
-filtersBtn.Size = UDim2.new(1, 0, 0, 28)
-filtersBtn.Position = UDim2.new(0, 0, 0, 80)
-filtersBtn.Text = "FILTROS ▾"
-filtersBtn.TextColor3 = Color3.new(1, 1, 1)
-filtersBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
-filtersBtn.Font = Enum.Font.GothamBold
-filtersBtn.TextSize = 12
-Instance.new("UICorner", filtersBtn)
-filtersBtn.Visible = false
-
-local copyLogsBtn = Instance.new("TextButton", panel)
-copyLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
-copyLogsBtn.Position = UDim2.new(0, 0, 0, 114)
-copyLogsBtn.TextColor3 = Color3.new(1, 1, 1)
-copyLogsBtn.BackgroundColor3 = Color3.fromRGB(65, 90, 140)
-copyLogsBtn.Font = Enum.Font.GothamBold
-copyLogsBtn.TextSize = 11
-copyLogsBtn.BorderSizePixel = 0
-Instance.new("UICorner", copyLogsBtn)
-copyLogsButton = copyLogsBtn
-
-local clearLogsBtn = Instance.new("TextButton", panel)
-clearLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
-clearLogsBtn.Position = UDim2.new(0.5, 2, 0, 114)
-clearLogsBtn.Text = "LIMPIAR LOGS"
-clearLogsBtn.TextColor3 = Color3.new(1, 1, 1)
-clearLogsBtn.BackgroundColor3 = Color3.fromRGB(110, 55, 55)
-clearLogsBtn.Font = Enum.Font.GothamBold
-clearLogsBtn.TextSize = 11
-clearLogsBtn.BorderSizePixel = 0
-Instance.new("UICorner", clearLogsBtn)
-clearLogsButton = clearLogsBtn
-
-local scroll = Instance.new("ScrollingFrame", frame)
-scroll.Size = UDim2.new(1, -12, 0, 146)
-scroll.Position = UDim2.new(0, 6, 0, 184)
-scroll.BackgroundTransparency = 1
-scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-scroll.ScrollBarThickness = 4
-scroll.Visible = false
-
-local listLayout = Instance.new("UIListLayout", scroll)
-listLayout.Padding = UDim.new(0, 4)
-
-local function disconnectConnection(conn)
-	if conn then
-		conn:Disconnect()
-	end
-	return nil
-end
-
-local function shutdownScript()
-	if scriptClosed then
-		return
+	local oldGui = guiParent:FindFirstChild("OsakaV79Fix")
+	if oldGui then
+		oldGui:Destroy()
 	end
 
-	logEnabled = false
-	scriptClosed = true
-	isRespawning = false
-	watchMode = false
-	autoPilot = false
-	isReturning = false
-	isGrabbing = false
-	returnLocked = false
-	stPatricChestPhase = false
-	eventShieldMode = false
-	forceRescan = false
-	currentTarget = nil
-	blacklist = {}
-	targetCache = {}
-	storedLogs = {}
-	lastScanSummary = ""
-	lastSelectionSummary = ""
-	lastScanHint = ""
-	startupReleaseTime = 0
-	firstTripPending = false
-	shieldCFrame = nil
-	shieldBaseCFrame = nil
-	shieldRetreatOffset = 0
-	shieldLastHealth = nil
-	shieldLastDamageTime = 0
-	shieldLastRecoverTime = 0
-	lastBrainrotSpawnLog = 0
-	pendingBrainrotSpawnCount = 0
-	pendingBrainrotSpawnSample = nil
-	activeRunToken = activeRunToken + 1
+	sg = Instance.new("ScreenGui")
+	sg.Name = "OsakaV79Fix"
+	sg.ResetOnSpawn = false
+	sg.Parent = guiParent
 
-	local humanoid = getHumanoid()
-	local root = getRoot()
-	restoreCharacterCollisionState()
-	if root then
-		root.AssemblyLinearVelocity = Vector3.zero
-		root.AssemblyAngularVelocity = Vector3.zero
-		root.Anchored = false
-	end
-	if humanoid then
-		humanoid.PlatformStand = false
-	end
+	local frame = Instance.new("Frame", sg)
+	frame.Size = UDim2.new(0, 172, 0, 38)
+	frame.Position = UDim2.new(0.05, 0, 0.3, 0)
+	frame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+	frame.Active = true
+	frame.Draggable = true
+	Instance.new("UICorner", frame)
 
-	diedConn = disconnectConnection(diedConn)
-	charAddedConn = disconnectConnection(charAddedConn)
-	brainrotAddedConn = disconnectConnection(brainrotAddedConn)
-	steppedConn = disconnectConnection(steppedConn)
+	local expanded = false
+	local filtersExpanded = false
 
-	if mainLoopThread then
-		pcall(function()
-			task.cancel(mainLoopThread)
-		end)
-		mainLoopThread = nil
-	end
+	local towerBtn = Instance.new("TextButton", sg)
+	towerBtn.Size = UDim2.new(0, 84, 0, 24)
+	towerBtn.Position = UDim2.new(0.05, 0, 0.3, -28)
+	towerBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
+	towerBtn.Font = Enum.Font.GothamBold
+	towerBtn.TextSize = 11
+	towerBtn.BorderSizePixel = 0
+	Instance.new("UICorner", towerBtn)
+	towerBtn.Visible = false
+	towerButton = towerBtn
 
-	mainButton = nil
-	towerButton = nil
-	shieldButton = nil
-	copyLogsButton = nil
-	clearLogsButton = nil
+	local shieldBtn = Instance.new("TextButton", sg)
+	shieldBtn.Size = UDim2.new(0, 84, 0, 24)
+	shieldBtn.Position = UDim2.new(0.05, 88, 0.3, -28)
+	shieldBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
+	shieldBtn.Font = Enum.Font.GothamBold
+	shieldBtn.TextSize = 11
+	shieldBtn.BorderSizePixel = 0
+	Instance.new("UICorner", shieldBtn)
+	shieldBtn.Visible = false
+	shieldButton = shieldBtn
 
-	if sg then
-		sg:Destroy()
-		sg = nil
-	end
-end
+	btn = Instance.new("TextButton", frame)
+	btn.Size = UDim2.new(1, -74, 0, 32)
+	btn.Position = UDim2.new(0, 6, 0, 3)
+	btn.TextColor3 = Color3.new(1, 1, 1)
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 13
+	Instance.new("UICorner", btn)
+	mainButton = btn
 
-local function applyLayout()
-	if scriptClosed then
-		return
-	end
-	panel.Visible = expanded
-	scroll.Visible = expanded and filtersExpanded
-	expandBtn.Text = expanded and "−" or "+"
-	filtersBtn.Text = filtersExpanded and "FILTROS ▴" or "FILTROS ▾"
+	local expandBtn = Instance.new("TextButton", frame)
+	expandBtn.Size = UDim2.new(0, 30, 0, 32)
+	expandBtn.Position = UDim2.new(1, -68, 0, 3)
+	expandBtn.Text = "+"
+	expandBtn.TextColor3 = Color3.new(1, 1, 1)
+	expandBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
+	expandBtn.Font = Enum.Font.GothamBold
+	expandBtn.TextSize = 18
+	Instance.new("UICorner", expandBtn)
 
-	if not expanded then
-		frame.Size = UDim2.new(0, 172, 0, 38)
-	elseif filtersExpanded then
-		frame.Size = UDim2.new(0, 172, 0, 336)
-	else
-		frame.Size = UDim2.new(0, 172, 0, 184)
-	end
+	local closeBtn = Instance.new("TextButton", frame)
+	closeBtn.Size = UDim2.new(0, 30, 0, 32)
+	closeBtn.Position = UDim2.new(1, -36, 0, 3)
+	closeBtn.Text = "X"
+	closeBtn.TextColor3 = Color3.new(1, 1, 1)
+	closeBtn.BackgroundColor3 = Color3.fromRGB(120, 45, 45)
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 14
+	Instance.new("UICorner", closeBtn)
 
-	scroll.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 8)
-end
+	local panel = Instance.new("Frame", frame)
+	panel.Position = UDim2.new(0, 6, 0, 40)
+	panel.Size = UDim2.new(1, -12, 0, 140)
+	panel.BackgroundTransparency = 1
+	panel.Visible = false
 
-local function updateReturnLimit(delta)
-	if scriptClosed then
-		return
-	end
-	returnAt = stPatricMaxCarry
+	status = Instance.new("TextLabel", panel)
+	status.Size = UDim2.new(1, 0, 0, 20)
+	status.Position = UDim2.new(0, 0, 0, 0)
+	status.Text = "ST PATRIC: ESPERANDO"
+	status.TextColor3 = Color3.new(1, 1, 1)
+	status.BackgroundTransparency = 1
+	status.Font = Enum.Font.Gotham
+	status.TextSize = 12
+	status.TextXAlignment = Enum.TextXAlignment.Left
+
+	local limitLabel = Instance.new("TextLabel", panel)
+	limitLabel.Size = UDim2.new(1, 0, 0, 18)
+	limitLabel.Position = UDim2.new(0, 0, 0, 24)
+	limitLabel.Text = "LIMITE"
+	limitLabel.TextColor3 = Color3.new(0.8, 0.8, 0.8)
+	limitLabel.BackgroundTransparency = 1
+	limitLabel.Font = Enum.Font.Gotham
+	limitLabel.TextSize = 11
+	limitLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+	local limitRow = Instance.new("Frame", panel)
+	limitRow.Size = UDim2.new(1, 0, 0, 28)
+	limitRow.Position = UDim2.new(0, 0, 0, 46)
+	limitRow.BackgroundTransparency = 1
+
+	local limitMinus = Instance.new("TextButton", limitRow)
+	limitMinus.Size = UDim2.new(0, 28, 0, 28)
+	limitMinus.Position = UDim2.new(0, 0, 0, 0)
+	limitMinus.Text = "-"
+	limitMinus.TextColor3 = Color3.new(1, 1, 1)
+	limitMinus.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
+	limitMinus.Font = Enum.Font.GothamBold
+	limitMinus.TextSize = 16
+	Instance.new("UICorner", limitMinus)
+
+	limitValue = Instance.new("TextLabel", limitRow)
+	limitValue.Size = UDim2.new(1, -64, 0, 28)
+	limitValue.Position = UDim2.new(0, 32, 0, 0)
 	limitValue.Text = tostring(returnAt)
-end
+	limitValue.TextColor3 = Color3.new(1, 1, 1)
+	limitValue.BackgroundColor3 = Color3.fromRGB(22, 24, 28)
+	limitValue.Font = Enum.Font.GothamBold
+	limitValue.TextSize = 13
+	Instance.new("UICorner", limitValue)
 
-limitMinus.MouseButton1Click:Connect(function()
-	updateReturnLimit(-1)
-end)
+	local limitPlus = Instance.new("TextButton", limitRow)
+	limitPlus.Size = UDim2.new(0, 28, 0, 28)
+	limitPlus.Position = UDim2.new(1, -28, 0, 0)
+	limitPlus.Text = "+"
+	limitPlus.TextColor3 = Color3.new(1, 1, 1)
+	limitPlus.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
+	limitPlus.Font = Enum.Font.GothamBold
+	limitPlus.TextSize = 16
+	Instance.new("UICorner", limitPlus)
 
-limitPlus.MouseButton1Click:Connect(function()
-	updateReturnLimit(1)
-end)
+	local filtersBtn = Instance.new("TextButton", panel)
+	filtersBtn.Size = UDim2.new(1, 0, 0, 28)
+	filtersBtn.Position = UDim2.new(0, 0, 0, 80)
+	filtersBtn.Text = "FILTROS ▾"
+	filtersBtn.TextColor3 = Color3.new(1, 1, 1)
+	filtersBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
+	filtersBtn.Font = Enum.Font.GothamBold
+	filtersBtn.TextSize = 12
+	Instance.new("UICorner", filtersBtn)
+	filtersBtn.Visible = false
 
-expandBtn.MouseButton1Click:Connect(function()
-	if scriptClosed then
-		return
+	local copyLogsBtn = Instance.new("TextButton", panel)
+	copyLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
+	copyLogsBtn.Position = UDim2.new(0, 0, 0, 114)
+	copyLogsBtn.TextColor3 = Color3.new(1, 1, 1)
+	copyLogsBtn.BackgroundColor3 = Color3.fromRGB(65, 90, 140)
+	copyLogsBtn.Font = Enum.Font.GothamBold
+	copyLogsBtn.TextSize = 11
+	copyLogsBtn.BorderSizePixel = 0
+	Instance.new("UICorner", copyLogsBtn)
+	copyLogsButton = copyLogsBtn
+
+	local clearLogsBtn = Instance.new("TextButton", panel)
+	clearLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
+	clearLogsBtn.Position = UDim2.new(0.5, 2, 0, 114)
+	clearLogsBtn.Text = "LIMPIAR LOGS"
+	clearLogsBtn.TextColor3 = Color3.new(1, 1, 1)
+	clearLogsBtn.BackgroundColor3 = Color3.fromRGB(110, 55, 55)
+	clearLogsBtn.Font = Enum.Font.GothamBold
+	clearLogsBtn.TextSize = 11
+	clearLogsBtn.BorderSizePixel = 0
+	Instance.new("UICorner", clearLogsBtn)
+	clearLogsButton = clearLogsBtn
+
+	local scroll = Instance.new("ScrollingFrame", frame)
+	scroll.Size = UDim2.new(1, -12, 0, 146)
+	scroll.Position = UDim2.new(0, 6, 0, 184)
+	scroll.BackgroundTransparency = 1
+	scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+	scroll.ScrollBarThickness = 4
+	scroll.Visible = false
+
+	local listLayout = Instance.new("UIListLayout", scroll)
+	listLayout.Padding = UDim.new(0, 4)
+
+	local function disconnectConnection(conn)
+		if conn then
+			conn:Disconnect()
+		end
+		return nil
 	end
-	expanded = not expanded
-	if not expanded then
-		filtersExpanded = false
-	end
-	applyLayout()
-end)
 
-filtersBtn.MouseButton1Click:Connect(function()
-	if scriptClosed then
-		return
-	end
-	filtersExpanded = not filtersExpanded
-	applyLayout()
-end)
-
-closeBtn.MouseButton1Click:Connect(function()
-	shutdownScript()
-end)
-
-towerBtn.MouseButton1Click:Connect(function()
-	if scriptClosed then
-		return
-	end
-	status.Text = "ST PATRIC DEDICADO"
-end)
-
-shieldBtn.MouseButton1Click:Connect(function()
-	if scriptClosed then
-		return
-	end
-	status.Text = "ST PATRIC DEDICADO"
-end)
-
-copyLogsBtn.MouseButton1Click:Connect(function()
-	if scriptClosed then
-		return
-	end
-	copyLogsToClipboard(status)
-	updateCopyLogsButtonState()
-end)
-
-clearLogsBtn.MouseButton1Click:Connect(function()
-	if scriptClosed then
-		return
-	end
-	clearStoredLogs(status)
-end)
-
-for _, name in ipairs(filterOrder) do
-	local filterButton = Instance.new("TextButton", scroll)
-	filterButton.Size = UDim2.new(1, 0, 0, 24)
-	filterButton.Text = name
-	filterButton.BackgroundColor3 = filtros[name] and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(35, 40, 45)
-	filterButton.TextColor3 = Color3.new(0.9, 0.9, 0.9)
-	filterButton.Font = Enum.Font.Gotham
-	filterButton.TextSize = 12
-	Instance.new("UICorner", filterButton)
-
-	filterButton.MouseButton1Click:Connect(function()
+	local function shutdownScript()
 		if scriptClosed then
 			return
 		end
-		filtros[name] = not filtros[name]
-		filterButton.BackgroundColor3 = filtros[name] and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(35, 40, 45)
-		refreshTargets(true)
-	end)
+
+		logEnabled = false
+		scriptClosed = true
+		isRespawning = false
+		watchMode = false
+		autoPilot = false
+		isReturning = false
+		isGrabbing = false
+		returnLocked = false
+		stPatricChestPhase = false
+		eventShieldMode = false
+		forceRescan = false
+		currentTarget = nil
+		blacklist = {}
+		targetCache = {}
+		storedLogs = {}
+		lastScanSummary = ""
+		lastSelectionSummary = ""
+		lastScanHint = ""
+		startupReleaseTime = 0
+		firstTripPending = false
+		shieldCFrame = nil
+		shieldBaseCFrame = nil
+		shieldRetreatOffset = 0
+		shieldLastHealth = nil
+		shieldLastDamageTime = 0
+		shieldLastRecoverTime = 0
+		lastBrainrotSpawnLog = 0
+		pendingBrainrotSpawnCount = 0
+		pendingBrainrotSpawnSample = nil
+		activeRunToken = activeRunToken + 1
+
+		local humanoid = getHumanoid()
+		local root = getRoot()
+		restoreCharacterCollisionState()
+		if root then
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+			root.Anchored = false
+		end
+		if humanoid then
+			humanoid.PlatformStand = false
+		end
+
+		diedConn = disconnectConnection(diedConn)
+		charAddedConn = disconnectConnection(charAddedConn)
+		brainrotAddedConn = disconnectConnection(brainrotAddedConn)
+		steppedConn = disconnectConnection(steppedConn)
+
+		if mainLoopThread then
+			pcall(function()
+				task.cancel(mainLoopThread)
+			end)
+			mainLoopThread = nil
+		end
+
+		mainButton = nil
+		towerButton = nil
+		shieldButton = nil
+		copyLogsButton = nil
+		clearLogsButton = nil
+
+		if sg then
+			sg:Destroy()
+			sg = nil
+		end
 	end
 
-listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(applyLayout)
-applyLayout()
-updateReturnLimit()
-updateTowerButtonState()
-updateShieldButtonState()
-updateCopyLogsButtonState()
+	local function applyLayout()
+		if scriptClosed then
+			return
+		end
+		panel.Visible = expanded
+		scroll.Visible = expanded and filtersExpanded
+		expandBtn.Text = expanded and "−" or "+"
+		filtersBtn.Text = filtersExpanded and "FILTROS ▴" or "FILTROS ▾"
+
+		if not expanded then
+			frame.Size = UDim2.new(0, 172, 0, 38)
+		elseif filtersExpanded then
+			frame.Size = UDim2.new(0, 172, 0, 336)
+		else
+			frame.Size = UDim2.new(0, 172, 0, 184)
+		end
+
+		scroll.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 8)
+	end
+
+	updateReturnLimit = function(delta)
+		if scriptClosed then
+			return
+		end
+		returnAt = stPatricMaxCarry
+		limitValue.Text = tostring(returnAt)
+	end
+
+	limitMinus.MouseButton1Click:Connect(function()
+		updateReturnLimit(-1)
+	end)
+
+	limitPlus.MouseButton1Click:Connect(function()
+		updateReturnLimit(1)
+	end)
+
+	expandBtn.MouseButton1Click:Connect(function()
+		if scriptClosed then
+			return
+		end
+		expanded = not expanded
+		if not expanded then
+			filtersExpanded = false
+		end
+		applyLayout()
+	end)
+
+	filtersBtn.MouseButton1Click:Connect(function()
+		if scriptClosed then
+			return
+		end
+		filtersExpanded = not filtersExpanded
+		applyLayout()
+	end)
+
+	closeBtn.MouseButton1Click:Connect(function()
+		shutdownScript()
+	end)
+
+	towerBtn.MouseButton1Click:Connect(function()
+		if scriptClosed then
+			return
+		end
+		status.Text = "ST PATRIC DEDICADO"
+	end)
+
+	shieldBtn.MouseButton1Click:Connect(function()
+		if scriptClosed then
+			return
+		end
+		status.Text = "ST PATRIC DEDICADO"
+	end)
+
+	copyLogsBtn.MouseButton1Click:Connect(function()
+		if scriptClosed then
+			return
+		end
+		copyLogsToClipboard(status)
+		updateCopyLogsButtonState()
+	end)
+
+	clearLogsBtn.MouseButton1Click:Connect(function()
+		if scriptClosed then
+			return
+		end
+		clearStoredLogs(status)
+	end)
+
+	for _, name in ipairs(filterOrder) do
+		local filterButton = Instance.new("TextButton", scroll)
+		filterButton.Size = UDim2.new(1, 0, 0, 24)
+		filterButton.Text = name
+		filterButton.BackgroundColor3 = filtros[name] and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(35, 40, 45)
+		filterButton.TextColor3 = Color3.new(0.9, 0.9, 0.9)
+		filterButton.Font = Enum.Font.Gotham
+		filterButton.TextSize = 12
+		Instance.new("UICorner", filterButton)
+
+		filterButton.MouseButton1Click:Connect(function()
+			if scriptClosed then
+				return
+			end
+			filtros[name] = not filtros[name]
+			filterButton.BackgroundColor3 = filtros[name] and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(35, 40, 45)
+			refreshTargets(true)
+		end)
+	end
+
+	listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(applyLayout)
+	applyLayout()
+	updateReturnLimit()
+	updateTowerButtonState()
+	updateShieldButtonState()
+	updateCopyLogsButtonState()
+end
 
 steppedConn = RS.Stepped:Connect(function()
 	if scriptClosed then
