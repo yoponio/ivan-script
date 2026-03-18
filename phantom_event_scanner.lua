@@ -35,11 +35,11 @@ local orbRefreshDelay = 0.02
 local depositTargetCount = 100
 local postTouchCountPolls = 10
 local postTouchCountPollDelay = 0.03
-local orbApproachHeight = -10
-local orbTouchOffset = -7.5
+local orbApproachHeight = -14
 local depositApproachHeight = 3.0
 local depositRetreatOffset = -30
 local orbRetreatOffset = -18
+local remoteTouchAttempts = 3
 local maxStoredLogs = 250
 
 local storedLogs = {}
@@ -474,14 +474,18 @@ local function tryTouch(part)
 	end
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
+	safeTravel(part.Position, orbApproachHeight)
 	if type(firetouchinterest) == "function" then
-		pcall(function()
-			firetouchinterest(root, part, 0)
-			task.wait()
-			firetouchinterest(root, part, 1)
-		end)
+		for _ = 1, remoteTouchAttempts do
+			pcall(function()
+				firetouchinterest(root, part, 0)
+				task.wait()
+				firetouchinterest(root, part, 1)
+			end)
+		end
+	else
+		root.CFrame = part.CFrame + Vector3.new(0, orbApproachHeight, 0)
 	end
-	safeTravel(part.Position, orbTouchOffset)
 	retreatUnderPosition(part.Position, orbRetreatOffset)
 	task.wait(orbTouchTime)
 	return true
@@ -556,7 +560,7 @@ local function collectOrbCycle()
 		return
 	end
 	debugLog("ORB_TARGET", string.format("held=%d/%d dist=%.1f path=%s", heldCount, depositTargetCount, distance, safePath(orbModel)))
-	local approach = CFrame.new(orbPart.Position + Vector3.new(0, orbApproachHeight, 0))
+	local approach = CFrame.new(orbPart.Position.X, resolveTravelY(orbPart.Position), orbPart.Position.Z)
 	if not moveTo(approach, flySpeed) then
 		return
 	end
