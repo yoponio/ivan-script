@@ -212,6 +212,123 @@ local function containsKeyword(text)
 	return false, nil
 end
 
+local function safeInstancePath(instance)
+	if not instance then
+		return "nil"
+	end
+
+	local ok, fullName = pcall(function()
+		return instance:GetFullName()
+	end)
+	if ok and fullName and fullName ~= "" then
+		return fullName
+	end
+
+	local className = "Unknown"
+	pcall(function()
+		className = instance.ClassName
+	end)
+
+	local name = "Destroyed"
+	pcall(function()
+		name = instance.Name
+	end)
+
+	return className .. ":" .. name
+end
+
+local function safeClassName(instance)
+	if not instance then
+		return "Nil"
+	end
+
+	local className = "Unknown"
+	pcall(function()
+		className = instance.ClassName
+	end)
+	return className
+end
+
+local function safeName(instance)
+	if not instance then
+		return ""
+	end
+
+	local name = ""
+	pcall(function()
+		name = instance.Name
+	end)
+	return name or ""
+end
+
+local function safeText(instance)
+	if not instance then
+		return ""
+	end
+
+	local text = ""
+	pcall(function()
+		text = instance.Text
+	end)
+	return text or ""
+end
+
+local function safeParent(instance)
+	if not instance then
+		return nil
+	end
+
+	local parent = nil
+	pcall(function()
+		parent = instance.Parent
+	end)
+	return parent
+end
+
+local function safeIsA(instance, className)
+	if not instance then
+		return false
+	end
+
+	local result = false
+	pcall(function()
+		result = instance:IsA(className)
+	end)
+	return result
+end
+
+local function safePromptData(prompt)
+	local data = {
+		actionText = "",
+		objectText = "",
+		enabled = false,
+		holdDuration = 0,
+		maxActivationDistance = 0,
+	}
+
+	if not prompt then
+		return data
+	end
+
+	pcall(function()
+		data.actionText = prompt.ActionText or ""
+	end)
+	pcall(function()
+		data.objectText = prompt.ObjectText or ""
+	end)
+	pcall(function()
+		data.enabled = prompt.Enabled
+	end)
+	pcall(function()
+		data.holdDuration = prompt.HoldDuration or 0
+	end)
+	pcall(function()
+		data.maxActivationDistance = prompt.MaxActivationDistance or 0
+	end)
+
+	return data
+end
+
 local function scanStPatricEvent(status)
 	if scriptClosed then
 		return
@@ -234,31 +351,32 @@ local function scanStPatricEvent(status)
 			local descendants = rootInstance:GetDescendants()
 			debugLog("EVENT_SCAN_INFO", scanRoot.label .. " descendants=" .. tostring(#descendants))
 			for index, descendant in ipairs(descendants) do
-		local reasons = {}
+				local reasons = {}
 		local score = 0
 
-		local matchedName, nameKeyword = containsKeyword(descendant.Name)
+				local matchedName, nameKeyword = containsKeyword(safeName(descendant))
 		if matchedName then
 			score = score + 2
 			table.insert(reasons, "name=" .. tostring(nameKeyword))
 		end
 
-		if descendant:IsA("ProximityPrompt") then
-			local matchedAction, actionKeyword = containsKeyword(descendant.ActionText)
+				if safeIsA(descendant, "ProximityPrompt") then
+					local promptData = safePromptData(descendant)
+					local matchedAction, actionKeyword = containsKeyword(promptData.actionText)
 			if matchedAction then
 				score = score + 3
 				table.insert(reasons, "action=" .. tostring(actionKeyword))
 			end
 
-			local matchedObject, objectKeyword = containsKeyword(descendant.ObjectText)
+					local matchedObject, objectKeyword = containsKeyword(promptData.objectText)
 			if matchedObject then
 				score = score + 3
 				table.insert(reasons, "object=" .. tostring(objectKeyword))
 			end
 
-			local parent = descendant.Parent
+					local parent = safeParent(descendant)
 			if parent then
-				local matchedParent, parentKeyword = containsKeyword(parent.Name)
+						local matchedParent, parentKeyword = containsKeyword(safeName(parent))
 				if matchedParent then
 					score = score + 2
 					table.insert(reasons, "parent=" .. tostring(parentKeyword))
@@ -266,18 +384,18 @@ local function scanStPatricEvent(status)
 			end
 		end
 
-				if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
-					local matchedText, textKeyword = containsKeyword(descendant.Text)
+				if safeIsA(descendant, "TextLabel") or safeIsA(descendant, "TextButton") then
+					local matchedText, textKeyword = containsKeyword(safeText(descendant))
 					if matchedText then
 						score = score + 3
 						table.insert(reasons, "text=" .. tostring(textKeyword))
 					end
 				end
 
-				if descendant:IsA("ClickDetector") then
-					local parent = descendant.Parent
+				if safeIsA(descendant, "ClickDetector") then
+					local parent = safeParent(descendant)
 					if parent then
-						local matchedParent, parentKeyword = containsKeyword(parent.Name)
+						local matchedParent, parentKeyword = containsKeyword(safeName(parent))
 						if matchedParent then
 							score = score + 2
 							table.insert(reasons, "click_parent=" .. tostring(parentKeyword))
@@ -307,7 +425,7 @@ local function scanStPatricEvent(status)
 		if a.score ~= b.score then
 			return a.score > b.score
 		end
-		return a.node:GetFullName() < b.node:GetFullName()
+		return safeInstancePath(a.node) < safeInstancePath(b.node)
 	end)
 
 	debugLog("EVENT_SCAN", "st_patric matches=" .. tostring(#matches))
@@ -319,17 +437,18 @@ local function scanStPatricEvent(status)
 			"#%d score=%d type=%s path=%s",
 			index,
 			entry.score,
-			node.ClassName,
-			node:GetFullName()
+			safeClassName(node),
+			safeInstancePath(node)
 		)
-		if node:IsA("ProximityPrompt") then
+		if safeIsA(node, "ProximityPrompt") then
+			local promptData = safePromptData(node)
 			line = line .. string.format(
 				" action=%s object=%s enabled=%s hold=%.2f max=%.1f",
-				tostring(node.ActionText),
-				tostring(node.ObjectText),
-				tostring(node.Enabled),
-				node.HoldDuration,
-				node.MaxActivationDistance
+				tostring(promptData.actionText),
+				tostring(promptData.objectText),
+				tostring(promptData.enabled),
+				promptData.holdDuration,
+				promptData.maxActivationDistance
 			)
 		end
 		if entry.reasons ~= "" then
