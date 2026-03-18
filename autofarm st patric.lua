@@ -94,6 +94,7 @@ local mainButton = nil
 local towerButton = nil
 local shieldButton = nil
 local copyLogsButton = nil
+local clearLogsButton = nil
 local shieldCFrame = nil
 local shieldBaseCFrame = nil
 local shieldRetreatOffset = 0
@@ -581,6 +582,15 @@ local function copyLogsToClipboard(status)
 
 	debugLog(copied and "LOG_COPY_OK" or "LOG_COPY_FAIL", copied and ("entries=" .. tostring(#storedLogs)) or tostring(copyError or "sin API de clipboard"))
 	return copied
+end
+
+local function clearStoredLogs(status)
+	storedLogs = {}
+	updateCopyLogsButtonState()
+	if status then
+		status.Text = "LOGS LIMPIADOS"
+	end
+	print("[OSAKA] logs limpiados")
 end
 
 local function debugOnce(eventName, details, key)
@@ -2437,6 +2447,24 @@ local function confirmStPatricDialog(status)
 	return false
 end
 
+local function finalizeStPatricSubmit(status, carryBefore, toolsBefore, toolsNow, reason)
+	captureBaselineTools()
+	invCount = 0
+	grabAttempts = 0
+	currentTarget = nil
+	blacklist = {}
+	returnLocked = false
+	isReturning = false
+	refreshTargets(true)
+	status.Text = "STP: ENTREGA OK"
+	debugLog(
+		"STP_SUBMIT_OK",
+		"reason=" .. tostring(reason) .. " carry_before=" .. tostring(carryBefore) .. " tools_before=" .. tostring(toolsBefore) .. " tools_now=" .. tostring(toolsNow)
+	)
+	releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
+	return true
+end
+
 local function submitStPatricLoad(status, runToken)
 	if runToken ~= nil and not isOperationValid(runToken) then
 		debugLog("STP_SUBMIT_ABORT", "operacion invalidada antes de entregar")
@@ -2449,6 +2477,12 @@ local function submitStPatricLoad(status, runToken)
 
 	local carryCount = getEffectiveCarryCount()
 	if carryCount <= 0 then
+		debugLog("STP_SUBMIT_SKIP", "sin carga para entregar")
+		invCount = 0
+		returnLocked = false
+		isReturning = false
+		currentTarget = nil
+		releaseAutopilot("STP: SIN CARGA", status)
 		return false
 	end
 
@@ -2500,7 +2534,8 @@ local function submitStPatricLoad(status, runToken)
 		debugLog("STP_SUBMIT_TRIGGER", "prompt=" .. safeInstancePath(prompt) .. " ok=" .. tostring(fireOk) .. (fireErr and (" err=" .. tostring(fireErr)) or "") .. " attempt=" .. tostring(attempt))
 
 		task.wait(0.2)
-		confirmStPatricDialog(status)
+		local confirmOk = confirmStPatricDialog(status)
+		local confirmAt = confirmOk and os.clock() or nil
 
 		local deadline = os.clock() + 4.0
 		while os.clock() < deadline do
@@ -2517,18 +2552,10 @@ local function submitStPatricLoad(status, runToken)
 			local toolsNow = getFarmToolCount()
 			local carryNow = getEffectiveCarryCount()
 			if toolsNow < toolsBefore or carryNow <= 0 then
-				captureBaselineTools()
-				invCount = 0
-				grabAttempts = 0
-				currentTarget = nil
-				blacklist = {}
-				returnLocked = false
-				isReturning = false
-				refreshTargets(true)
-				status.Text = "STP: ENTREGA OK"
-				debugLog("STP_SUBMIT_OK", "carry_before=" .. tostring(carryCount) .. " tools_before=" .. tostring(toolsBefore) .. " tools_now=" .. tostring(toolsNow))
-				releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
-				return true
+				return finalizeStPatricSubmit(status, carryCount, toolsBefore, toolsNow, carryNow <= 0 and "carry_zero" or "tools_changed")
+			end
+			if confirmAt and (os.clock() - confirmAt) >= 0.9 then
+				return finalizeStPatricSubmit(status, carryCount, toolsBefore, toolsNow, "yes_confirmed")
 			end
 			task.wait(0.1)
 		end
@@ -2720,7 +2747,7 @@ Instance.new("UICorner", filtersBtn)
 filtersBtn.Visible = false
 
 local copyLogsBtn = Instance.new("TextButton", panel)
-copyLogsBtn.Size = UDim2.new(1, 0, 0, 24)
+copyLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
 copyLogsBtn.Position = UDim2.new(0, 0, 0, 114)
 copyLogsBtn.TextColor3 = Color3.new(1, 1, 1)
 copyLogsBtn.BackgroundColor3 = Color3.fromRGB(65, 90, 140)
@@ -2729,6 +2756,18 @@ copyLogsBtn.TextSize = 11
 copyLogsBtn.BorderSizePixel = 0
 Instance.new("UICorner", copyLogsBtn)
 copyLogsButton = copyLogsBtn
+
+local clearLogsBtn = Instance.new("TextButton", panel)
+clearLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
+clearLogsBtn.Position = UDim2.new(0.5, 2, 0, 114)
+clearLogsBtn.Text = "LIMPIAR LOGS"
+clearLogsBtn.TextColor3 = Color3.new(1, 1, 1)
+clearLogsBtn.BackgroundColor3 = Color3.fromRGB(110, 55, 55)
+clearLogsBtn.Font = Enum.Font.GothamBold
+clearLogsBtn.TextSize = 11
+clearLogsBtn.BorderSizePixel = 0
+Instance.new("UICorner", clearLogsBtn)
+clearLogsButton = clearLogsBtn
 
 local scroll = Instance.new("ScrollingFrame", frame)
 scroll.Size = UDim2.new(1, -12, 0, 146)
@@ -2811,6 +2850,7 @@ local function shutdownScript()
 	towerButton = nil
 	shieldButton = nil
 	copyLogsButton = nil
+	clearLogsButton = nil
 
 	if sg then
 		sg:Destroy()
@@ -2896,6 +2936,13 @@ copyLogsBtn.MouseButton1Click:Connect(function()
 	end
 	copyLogsToClipboard(status)
 	updateCopyLogsButtonState()
+end)
+
+clearLogsBtn.MouseButton1Click:Connect(function()
+	if scriptClosed then
+		return
+	end
+	clearStoredLogs(status)
 end)
 
 for _, name in ipairs(filterOrder) do
