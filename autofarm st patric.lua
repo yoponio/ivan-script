@@ -52,7 +52,7 @@ local shieldRecoverDelayAfterHit = 0.80
 local shieldExitStabilizeTime = 0.18
 local stPatricSubmitCooldown = 0.60
 local stPatricLastSubmitAttempt = 0
-local stPatricPromptHeightOffset = -4.5
+local stPatricPromptHeightOffset = -24
 local stPatricNearFullMargin = 1
 local stPatricPostTriggerDelay = 0.12
 local stPatricSubmitCheckInterval = 0.06
@@ -1746,7 +1746,7 @@ local function approachStPatricPrompt(promptPos, runToken)
 		return false
 	end
 
-	local finalY = promptPos.Y + stPatricPromptHeightOffset
+	local finalY = math.max(resolveTravelY(promptPos, nil, true), promptPos.Y + stPatricPromptHeightOffset)
 	local finalGoal = CFrame.new(promptPos.X, finalY, promptPos.Z)
 	local reached = tweenTo(finalGoal, runToken)
 	if not reached or getGoalDistance(finalGoal) > 4 then
@@ -2607,7 +2607,8 @@ local function submitStPatricLoad(status, runToken)
 				return false
 			end
 			if promptPos then
-				local holdGoal = CFrame.new(promptPos.X, promptPos.Y + stPatricPromptHeightOffset, promptPos.Z)
+				local holdY = math.max(resolveTravelY(promptPos, nil, true), promptPos.Y + stPatricPromptHeightOffset)
+				local holdGoal = CFrame.new(promptPos.X, holdY, promptPos.Z)
 				if getGoalDistance(holdGoal) > stPatricHoldSnapDistance then
 					snapCharacterTo(holdGoal)
 				end
