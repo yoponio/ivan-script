@@ -20,15 +20,18 @@ local loopThread = nil
 local watchPromptConn = nil
 local characterAddedConn = nil
 
+local instantMove = true
 local flySpeed = 420
-local settleTime = 0.08
-local orbTouchTime = 0.12
+local settleTime = 0.03
+local orbTouchTime = 0.05
 local depositDistance = 6
-local promptRetryDelay = 0.18
-local orbRefreshDelay = 0.05
+local promptRetryDelay = 0.08
+local orbRefreshDelay = 0.02
 local depositTargetCount = 100
-local postTouchCountPolls = 8
-local postTouchCountPollDelay = 0.05
+local postTouchCountPolls = 10
+local postTouchCountPollDelay = 0.03
+local orbApproachHeight = 3.0
+local depositApproachHeight = 3.0
 local maxStoredLogs = 250
 
 local storedLogs = {}
@@ -212,6 +215,12 @@ local function moveTo(targetCFrame, speed)
 		return false
 	end
 	stopTween()
+	if instantMove then
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+		root.CFrame = targetCFrame
+		return autoFarm
+	end
 	local distance = (root.Position - targetCFrame.Position).Magnitude
 	if distance <= 2 then
 		root.CFrame = targetCFrame
@@ -366,10 +375,12 @@ local function tryTouch(part)
 	if not root or not part then
 		return false
 	end
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
 	if type(firetouchinterest) == "function" then
 		pcall(function()
 			firetouchinterest(root, part, 0)
-			task.wait(0.05)
+			task.wait()
 			firetouchinterest(root, part, 1)
 		end)
 	end
@@ -391,7 +402,7 @@ local function getPromptStandCFrame(prompt)
 		if direction.Magnitude < 1 then
 			direction = Vector3.new(0, 0, -1)
 		end
-		approach = position + direction.Unit * depositDistance + Vector3.new(0, 2.0, 0)
+		approach = position + direction.Unit * depositDistance + Vector3.new(0, depositApproachHeight, 0)
 		lookTarget = position
 	end
 	return CFrame.lookAt(approach, lookTarget)
@@ -435,7 +446,7 @@ local function collectOrbCycle()
 		return
 	end
 	debugLog("ORB_TARGET", string.format("held=%d/%d dist=%.1f path=%s", heldCount, depositTargetCount, distance, safePath(orbModel)))
-	local approach = CFrame.new(orbPart.Position + Vector3.new(0, 2.0, 0))
+	local approach = CFrame.new(orbPart.Position + Vector3.new(0, orbApproachHeight, 0))
 	if not moveTo(approach, flySpeed) then
 		return
 	end
