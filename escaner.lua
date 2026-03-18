@@ -1065,12 +1065,17 @@ local function pollMovement(now)
 
 local function pollNearbyPrompts()
 	local prompts = {}
+	local seen = {}
 	for _, descendant in ipairs(workspace:GetDescendants()) do
 		if descendant:IsA("ProximityPrompt") then
 			local keywordMatch = containsInterestingKeyword(lowerText(descendant))
 			local distance = getDistanceToPlayer(descendant)
 			if keywordMatch or (distance and distance <= 20) then
-				table.insert(prompts, safePath(descendant) .. "@" .. (distance and string.format("%.1f", distance) or "nil"))
+				local key = safePath(descendant)
+				if not seen[key] then
+					seen[key] = true
+					table.insert(prompts, key .. "@" .. (distance and string.format("%.1f", distance) or "nil"))
+				end
 			end
 		end
 	end
@@ -1318,6 +1323,10 @@ local function createUi()
 	filterButton.MouseButton1Click:Connect(function()
 		cycleCaptureMode()
 		nearbyPromptScanEnabled = captureMode == "ALL"
+		if captureMode == "GODTRACE" then
+			lastGuiSnapshot = ""
+			lastNearbyPromptSnapshot = ""
+		end
 		scheduleUiRefresh()
 		log("FLOW", "FILTER", "observer", "mode=" .. captureMode)
 	end)
@@ -1410,7 +1419,7 @@ mainLoopThread = task.spawn(function()
 			if captureMode == "GODTRACE" then
 				pollGodTraceSignals()
 			end
-			if now - lastGuiPollAt >= guiPollInterval then
+			if captureMode ~= "GODTRACE" and now - lastGuiPollAt >= guiPollInterval then
 				lastGuiPollAt = now
 				pollGuiSignals()
 			end
