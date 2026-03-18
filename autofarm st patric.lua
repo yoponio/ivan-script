@@ -1084,6 +1084,14 @@ local function findStPatricSubmitPrompt()
 	return bestPrompt, bestScore
 end
 
+local function detectStPatricEventContext()
+	local prompt, score = findStPatricSubmitPrompt()
+	if prompt and score > 0 then
+		return true, "pot_prompt", score
+	end
+	return false, "no_pot_prompt", 0
+end
+
 local function findStPatricYesButton()
 	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
 	if not playerGui then
@@ -2946,8 +2954,17 @@ btn.MouseButton1Click:Connect(function()
 		lastPlatformInterferenceLog = 0
 		lastAnchorInterferenceLog = 0
 		lastDesyncInterferenceLog = 0
+		local eventOk, eventReason, eventScore = detectStPatricEventContext()
+		if not eventOk then
+			watchMode = false
+			updateButtonState(btn)
+			debugLog("STP_CONTEXT_FAIL", "reason=" .. tostring(eventReason) .. " score=" .. tostring(eventScore))
+			status.Text = "STP: EVENTO NO DETECTADO"
+			return
+		end
 		resetSessionProgress()
 		invalidateRunToken("watchOn")
+		debugLog("STP_CONTEXT_OK", "reason=" .. tostring(eventReason) .. " score=" .. tostring(eventScore))
 		debugLog("STP_ON", string.format("base=(%.2f, %.2f, %.2f)", root.Position.X, root.Position.Y, root.Position.Z))
 		debugLog("MONITOR_SESSION", "watch st patric iniciado")
 		basePos = root.Position
@@ -3004,6 +3021,15 @@ mainLoopThread = task.spawn(function()
 			local humanoid = getHumanoid()
 			local root = getRoot()
 			if not humanoid or not root or humanoid.Health <= 0 then
+				return
+			end
+
+			local eventOk = detectStPatricEventContext()
+			if not eventOk and not isReturning and getEffectiveCarryCount() <= 0 then
+				debugLog("STP_CONTEXT_LOST", "prompt de olla no detectado")
+				releaseAutopilot("STP: EVENTO NO DETECTADO", status)
+				watchMode = false
+				updateButtonState(btn)
 				return
 			end
 
