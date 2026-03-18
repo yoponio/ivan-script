@@ -221,7 +221,9 @@ local function scanStPatricEvent(status)
 	debugLog("EVENT_SCAN_START", "st_patric workspace_scan")
 
 	local matches = {}
-	for _, descendant in ipairs(workspace:GetDescendants()) do
+	local descendants = workspace:GetDescendants()
+	debugLog("EVENT_SCAN_INFO", "descendants=" .. tostring(#descendants))
+	for index, descendant in ipairs(descendants) do
 		local reasons = {}
 		local score = 0
 
@@ -260,6 +262,13 @@ local function scanStPatricEvent(status)
 				score = score,
 				reasons = table.concat(reasons, ","),
 			})
+		end
+
+		if index % 250 == 0 then
+			task.wait()
+			if scriptClosed then
+				return
+			end
 		end
 	end
 
