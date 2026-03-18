@@ -942,8 +942,31 @@ end
 local function getTargetRarity(target)
 	local node = target
 	while node and node ~= workspace do
-		return false
+		local resolved = resolveRarityName(node.Name)
+		if rarityPriority[resolved] then
+			return resolved
+		end
+		node = node.Parent
 	end
+	return "Common"
+end
+
+local function parseLevelValue(value)
+	if type(value) == "number" then
+		return value
+	end
+	if type(value) == "string" then
+		return tonumber(string.match(value, "%d+"))
+	end
+	return nil
+end
+
+local function getTargetLevel(target)
+	if not target then
+		return 0
+	end
+
+	for _, attributeName in ipairs({"Level", "Lvl", "level", "lvl"}) do
 		local ok, value = pcall(function()
 			return target:GetAttribute(attributeName)
 		end)
