@@ -9,6 +9,7 @@ print("--- INICIANDO OSAKA " .. scriptVersion .. " (FREE SENTINEL FIX) ---")
 local Players = game:GetService("Players")
 local TS = game:GetService("TweenService")
 local RS = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
 
 local LP = Players.LocalPlayer
 
@@ -20,6 +21,8 @@ local returnLocked = false
 local scriptClosed = false
 local towerPriorityMode = false
 local eventShieldMode = false
+local godMode = false
+local manualMoveMode = false
 local isRespawning = false
 local quietLogMode = false
 
@@ -28,8 +31,11 @@ local firstTripSpeed = 220
 local startupStabilizeTime = 0.45
 local safeDepth = -6.5
 local longTravelDistance = 1800
-local longTravelHeightOffset = 12
+local longTravelMinHeightOffset = 30
+local longTravelMaxHeightOffset = 70
 local respawnToolSyncDelay = 2.0
+local minimumReadyHealth = 95
+local healthResumeDelay = 0.50
 local depositRise = 0.08
 local returnAt = 2
 local returnApproachDepth = -8.5
@@ -54,6 +60,11 @@ local shieldRecoverStep = 0.08
 local shieldRecoverInterval = 0.30
 local shieldRecoverDelayAfterHit = 0.80
 local shieldExitStabilizeTime = 0.18
+local godHealLogCooldown = 1.0
+local travelStepDistance = 120
+local travelStepDelay = 0.04
+local manualStepDistance = 12
+local manualVerticalStep = 7
 
 local invCount = 0
 local basePos = nil
@@ -96,6 +107,9 @@ local lastPlatformInterferenceLog = 0
 local lastAnchorInterferenceLog = 0
 local lastDesyncInterferenceLog = 0
 local toolSyncBlockedUntil = 0
+local lastHealthWaitLog = 0
+local healthWaitLogCooldown = 1.0
+local lastGodHealLog = 0
 
 local flyValue = Instance.new("CFrameValue")
 
@@ -110,6 +124,8 @@ local mainLoopThread = nil
 local mainButton = nil
 local towerButton = nil
 local shieldButton = nil
+local godButton = nil
+local manualMoveButton = nil
 local copyLogsButton = nil
 local clearLogsButton = nil
 local quietLogsButton = nil
@@ -348,7 +364,7 @@ local function invalidateRunToken(reason)
 end
 
 local function armStartupStabilization(reason)
-	startupReleaseTime = os.clock() + startupStabilizeTime
+	startupReleaseTime = math.max(os.clock() + startupStabilizeTime, toolSyncBlockedUntil)
 	firstTripPending = true
 	debugLog("STABILIZE", (reason or "inicio") .. " hasta=" .. string.format("%.3f", startupReleaseTime))
 end
@@ -430,6 +446,14 @@ local function blockToolSync(reason, duration, recaptureBaseline)
 	if recaptureBaseline then
 		task.delay(syncDuration, function()
 			if scriptClosed or not watchMode or isRespawning then
+				return
+			end
+			if invCount > 0 or returnLocked or isReturning or isGrabbing then
+				debugLog("TOOL_SYNC", "skip recapture reason=busy_state")
+				return
+			end
+			if getFarmToolCount() > 0 then
+				debugLog("TOOL_SYNC", "skip recapture reason=farm_tools_detected")
 				return
 			end
 			captureBaselineTools()
@@ -523,6 +547,9 @@ end
 local function getCompactStateLabel()
 	if scriptClosed then
 		return "CLOSED"
+	end
+	if manualMoveMode then
+		return "MANUAL"
 	end
 	if eventShieldMode then
 		return "SHIELD"
@@ -685,6 +712,24 @@ local function updateShieldButtonState()
 	shieldButton.TextColor3 = Color3.new(1, 1, 1)
 end
 
+local function updateGodButtonState()
+	if scriptClosed or not godButton then
+		return
+	end
+	godButton.Text = godMode and "GOD ON" or "GOD OFF"
+	godButton.BackgroundColor3 = godMode and Color3.fromRGB(180, 85, 65) or Color3.fromRGB(35, 40, 45)
+	godButton.TextColor3 = Color3.new(1, 1, 1)
+end
+
+local function updateManualMoveButtonState()
+	if scriptClosed or not manualMoveButton then
+		return
+	end
+	manualMoveButton.Text = manualMoveMode and "MOVE ON" or "MOVE OFF"
+	manualMoveButton.BackgroundColor3 = manualMoveMode and Color3.fromRGB(75, 140, 95) or Color3.fromRGB(35, 40, 45)
+	manualMoveButton.TextColor3 = Color3.new(1, 1, 1)
+end
+
 local function updateQuietLogsButtonState()
 	if scriptClosed or not quietLogsButton then
 		return
@@ -791,6 +836,165 @@ local function configureShieldHumanoid(humanoid, enabled)
 	humanoid.PlatformStand = enabled
 end
 
+local function configureGodHumanoid(humanoid, enabled)
+	if not humanoid then
+		return
+	end
+
+	pcall(function()
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, not enabled)
+	end)
+	pcall(function()
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, not enabled)
+	end)
+	pcall(function()
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, not enabled)
+	end)
+	pcall(function()
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Swimming, not enabled)
+	end)
+	pcall(function()
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, not enabled)
+	end)
+	pcall(function()
+		humanoid.BreakJointsOnDeath = not enabled
+	end)
+end
+
+local function maintainGodMode(humanoid)
+	if not godMode or not humanoid or humanoid.Health <= 0 then
+		return
+	end
+
+	configureGodHumanoid(humanoid, true)
+	if humanoid.Health < humanoid.MaxHealth then
+		local beforeHealth = humanoid.Health
+		pcall(function()
+			humanoid.Health = humanoid.MaxHealth
+		end)
+		local now = os.clock()
+		if now - lastGodHealLog >= godHealLogCooldown then
+			debugLog("GOD_HEAL", string.format("hp=%.1f->%.1f", beforeHealth, humanoid.MaxHealth))
+			lastGodHealLog = now
+		end
+	end
+end
+
+local function isTravelModeActive()
+	return autoPilot or manualMoveMode
+end
+
+local function applyTravelGodState(humanoid, root)
+	if humanoid then
+		configureGodHumanoid(humanoid, true)
+		humanoid.PlatformStand = true
+	end
+	if root then
+		root.Anchored = false
+		root.CanCollide = false
+		root.CanTouch = false
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+	end
+	collisionModeLabel = "TRAVEL-GOD"
+	if mainButton then
+		updateButtonState(mainButton)
+	end
+end
+
+local function releaseTravelGodState(humanoid)
+	if humanoid then
+		humanoid.PlatformStand = false
+		pcall(function()
+			humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+		end)
+		pcall(function()
+			humanoid:ChangeState(Enum.HumanoidStateType.Running)
+		end)
+		if not godMode then
+			configureGodHumanoid(humanoid, false)
+		end
+	end
+	restoreCharacterCollisionState()
+end
+
+local function getManualMoveVector()
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return Vector3.zero
+	end
+
+	local lookVector = camera.CFrame.LookVector
+	local flatForward = Vector3.new(lookVector.X, 0, lookVector.Z)
+	if flatForward.Magnitude <= 0.001 then
+		flatForward = Vector3.new(0, 0, -1)
+	else
+		flatForward = flatForward.Unit
+	end
+	local flatRight = Vector3.new(camera.CFrame.RightVector.X, 0, camera.CFrame.RightVector.Z)
+	if flatRight.Magnitude <= 0.001 then
+		flatRight = Vector3.new(1, 0, 0)
+	else
+		flatRight = flatRight.Unit
+	end
+
+	local moveVector = Vector3.zero
+	if UIS:IsKeyDown(Enum.KeyCode.W) then
+		moveVector = moveVector + flatForward
+	end
+	if UIS:IsKeyDown(Enum.KeyCode.S) then
+		moveVector = moveVector - flatForward
+	end
+	if UIS:IsKeyDown(Enum.KeyCode.D) then
+		moveVector = moveVector + flatRight
+	end
+	if UIS:IsKeyDown(Enum.KeyCode.A) then
+		moveVector = moveVector - flatRight
+	end
+	if UIS:IsKeyDown(Enum.KeyCode.Space) then
+		moveVector = moveVector + Vector3.new(0, 1, 0)
+	end
+	if UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.C) then
+		moveVector = moveVector - Vector3.new(0, 1, 0)
+	end
+
+	if moveVector.Magnitude <= 0.001 then
+		return Vector3.zero
+	end
+	return moveVector.Unit
+end
+
+local function stepTravelTo(goal, runToken)
+	local root = getRoot()
+	if not root then
+		return false
+	end
+
+	local stepDistance = firstTripPending and math.max(travelStepDistance * 0.85, 80) or travelStepDistance
+	while true do
+		if runToken ~= nil and not isOperationValid(runToken) then
+			debugLog("TRAVEL_ABORT", "invalidada en stepTravel")
+			return false
+		end
+		root = getRoot()
+		if not root then
+			return false
+		end
+		local currentPos = flyValue.Value.Position
+		local delta = goal.Position - currentPos
+		local distance = delta.Magnitude
+		if distance <= 0.5 then
+			flyValue.Value = goal
+			return true
+		end
+		local segment = math.min(stepDistance, distance)
+		local nextPos = currentPos + delta.Unit * segment
+		flyValue.Value = CFrame.new(nextPos)
+		debugLog("TRAVEL_STEP", string.format("segment=%.2f remaining=%.2f", segment, math.max(distance - segment, 0)))
+		task.wait(travelStepDelay)
+	end
+end
+
 local function restoreFromShield()
 	local character = LP.Character
 	local root = getRoot()
@@ -885,6 +1089,9 @@ local function setEventShieldMode(enabled, status)
 		restoreCharacterCollisionState()
 		if humanoid then
 			configureShieldHumanoid(humanoid, false)
+			if godMode then
+				configureGodHumanoid(humanoid, true)
+			end
 		end
 		if status then
 			status.Text = "SHIELD OFF"
@@ -1446,6 +1653,11 @@ local function getClosestTarget()
 end
 
 local function tweenTo(goal, runToken)
+	if godMode then
+		debugLog("TRAVEL_MODE", "step_travel")
+		return stepTravelTo(goal, runToken)
+	end
+
 	local startPos = flyValue.Value.Position
 	local distance = (startPos - goal.Position).Magnitude
 	if distance <= 0.5 then
@@ -1514,7 +1726,8 @@ local function getAdaptiveTravelY(rootPos, targetPos, forcedY, respectBaseClamp)
 	if not forcedY and basePos and rootPos then
 		local travelDistance = (rootPos - targetPos).Magnitude
 		if travelDistance >= longTravelDistance then
-			safeY = math.max(safeY, basePos.Y + longTravelHeightOffset, targetPos.Y + 6)
+			local travelOffset = math.clamp(travelDistance / 80, longTravelMinHeightOffset, longTravelMaxHeightOffset)
+			safeY = math.max(safeY, basePos.Y + travelOffset, targetPos.Y + 12)
 		end
 	end
 	return safeY
@@ -1562,7 +1775,8 @@ local function ghostReturnTravel(targetPos, runToken)
 	local travelDistance = (root.Position - targetPos).Magnitude
 	local cruiseY = math.max(basePos.Y + safeDepth, root.Position.Y - 1.5)
 	if travelDistance >= longTravelDistance then
-		cruiseY = math.max(cruiseY, basePos.Y + longTravelHeightOffset, targetPos.Y + 6)
+		local travelOffset = math.clamp(travelDistance / 80, longTravelMinHeightOffset, longTravelMaxHeightOffset)
+		cruiseY = math.max(cruiseY, basePos.Y + travelOffset, targetPos.Y + 12)
 	end
 	cruiseY = resolveTravelY(targetPos, cruiseY, false)
 	return ghostTravel(targetPos, cruiseY, false, runToken)
@@ -2095,7 +2309,7 @@ local expanded = false
 local filtersExpanded = false
 
 local towerBtn = Instance.new("TextButton", sg)
-towerBtn.Size = UDim2.new(0, 84, 0, 24)
+towerBtn.Size = UDim2.new(0, 54, 0, 24)
 towerBtn.Position = UDim2.new(0.05, 0, 0.3, -28)
 towerBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
 towerBtn.Font = Enum.Font.GothamBold
@@ -2104,15 +2318,25 @@ towerBtn.BorderSizePixel = 0
 Instance.new("UICorner", towerBtn)
 towerButton = towerBtn
 
-local shieldBtn = Instance.new("TextButton", sg)
-shieldBtn.Size = UDim2.new(0, 84, 0, 24)
-shieldBtn.Position = UDim2.new(0.05, 88, 0.3, -28)
-shieldBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
-shieldBtn.Font = Enum.Font.GothamBold
-shieldBtn.TextSize = 11
-shieldBtn.BorderSizePixel = 0
-Instance.new("UICorner", shieldBtn)
-shieldButton = shieldBtn
+local godBtn = Instance.new("TextButton", sg)
+godBtn.Size = UDim2.new(0, 54, 0, 24)
+godBtn.Position = UDim2.new(0.05, 58, 0.3, -28)
+godBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
+godBtn.Font = Enum.Font.GothamBold
+godBtn.TextSize = 11
+godBtn.BorderSizePixel = 0
+Instance.new("UICorner", godBtn)
+godButton = godBtn
+
+local moveBtn = Instance.new("TextButton", sg)
+moveBtn.Size = UDim2.new(0, 54, 0, 24)
+moveBtn.Position = UDim2.new(0.05, 116, 0.3, -28)
+moveBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
+moveBtn.Font = Enum.Font.GothamBold
+moveBtn.TextSize = 11
+moveBtn.BorderSizePixel = 0
+Instance.new("UICorner", moveBtn)
+manualMoveButton = moveBtn
 
 local btn = Instance.new("TextButton", frame)
 btn.Size = UDim2.new(1, -74, 0, 32)
@@ -2280,6 +2504,8 @@ local function shutdownScript()
 	isGrabbing = false
 	returnLocked = false
 	eventShieldMode = false
+	godMode = false
+	manualMoveMode = false
 	forceRescan = false
 	currentTarget = nil
 	blacklist = {}
@@ -2312,7 +2538,8 @@ local function shutdownScript()
 		root.Anchored = false
 	end
 	if humanoid then
-		humanoid.PlatformStand = false
+		releaseTravelGodState(humanoid)
+		configureGodHumanoid(humanoid, false)
 	end
 
 	diedConn = disconnectConnection(diedConn)
@@ -2333,6 +2560,8 @@ local function shutdownScript()
 	mainButton = nil
 	towerButton = nil
 	shieldButton = nil
+	godButton = nil
+	manualMoveButton = nil
 	copyLogsButton = nil
 	clearLogsButton = nil
 	quietLogsButton = nil
@@ -2429,11 +2658,48 @@ towerBtn.MouseButton1Click:Connect(function()
 	end
 end)
 
-shieldBtn.MouseButton1Click:Connect(function()
+godBtn.MouseButton1Click:Connect(function()
 	if scriptClosed then
 		return
 	end
-	setEventShieldMode(not eventShieldMode, status)
+	godMode = not godMode
+	local humanoid = getHumanoid()
+	if humanoid then
+		if godMode then
+			configureGodHumanoid(humanoid, true)
+			maintainGodMode(humanoid)
+		elseif not eventShieldMode then
+			configureGodHumanoid(humanoid, false)
+		end
+	end
+	debugLog("GOD_MODE", "enabled=" .. tostring(godMode))
+	updateGodButtonState()
+	if status then
+		status.Text = godMode and "GOD MODE ACTIVO" or "GOD MODE OFF"
+	end
+end)
+
+moveBtn.MouseButton1Click:Connect(function()
+	if scriptClosed then
+		return
+	end
+	if watchMode or autoPilot or isReturning or isGrabbing then
+		status.Text = "MOVE MANUAL BLOQUEADO"
+		return
+	end
+	manualMoveMode = not manualMoveMode
+	if manualMoveMode then
+		godMode = true
+		debugLog("MANUAL_MOVE", "enabled=true")
+		status.Text = "MOVE GOD MANUAL"
+	else
+		debugLog("MANUAL_MOVE", "enabled=false")
+		status.Text = "MOVE GOD OFF"
+		local humanoid = getHumanoid()
+		releaseTravelGodState(humanoid)
+	end
+	updateGodButtonState()
+	updateManualMoveButtonState()
 end)
 
 copyLogsBtn.MouseButton1Click:Connect(function()
@@ -2475,7 +2741,8 @@ listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(applyLayout)
 applyLayout()
 updateReturnLimit()
 updateTowerButtonState()
-updateShieldButtonState()
+updateGodButtonState()
+updateManualMoveButtonState()
 updateQuietLogsButtonState()
 updateCopyLogsButtonState()
 
@@ -2505,8 +2772,9 @@ steppedConn = RS.Stepped:Connect(function()
 		end
 	end
 
-	if not autoPilot and not eventShieldMode then
-		restoreCharacterCollisionState()
+	if not autoPilot and not eventShieldMode and not manualMoveMode then
+		local idleHumanoid = getHumanoid()
+		releaseTravelGodState(idleHumanoid)
 		return
 	end
 
@@ -2515,6 +2783,22 @@ steppedConn = RS.Stepped:Connect(function()
 	local humanoid = getHumanoid()
 	if not character or not root then
 		return
+	end
+	if isTravelModeActive() then
+		applyTravelGodState(humanoid, root)
+	end
+	if humanoid and godMode then
+		maintainGodMode(humanoid)
+	end
+	if manualMoveMode and not autoPilot then
+		local moveVector = getManualMoveVector()
+		if moveVector.Magnitude > 0 then
+			local nextPosition = flyValue.Value.Position + (moveVector * manualStepDistance)
+			if math.abs(moveVector.Y) > 0 then
+				nextPosition = flyValue.Value.Position + Vector3.new(moveVector.X * manualStepDistance, moveVector.Y * manualVerticalStep, moveVector.Z * manualStepDistance)
+			end
+			flyValue.Value = CFrame.new(nextPosition)
+		end
 	end
 
 	local observedToolCount = getFarmToolCount()
@@ -2596,10 +2880,22 @@ local function bindCharacter(btnRef, statusRef)
 	local character = getCharacter()
 	local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
 	if humanoid then
+		if godMode then
+			configureGodHumanoid(humanoid, true)
+			maintainGodMode(humanoid)
+		end
+		if manualMoveMode or autoPilot then
+			applyTravelGodState(humanoid, getRoot())
+		end
 		local lastHealth = humanoid.Health
 		healthChangedConn = humanoid.HealthChanged:Connect(function(health)
 			if scriptClosed then
 				return
+			end
+
+			if godMode and health > 0 and health < humanoid.MaxHealth then
+				maintainGodMode(humanoid)
+				health = humanoid.Health
 			end
 
 			local delta = health - lastHealth
@@ -2756,6 +3052,7 @@ btn.MouseButton1Click:Connect(function()
 		debugLog("MONITOR_SESSION", "watch detenido")
 		releaseAutopilot("ESTADO: ESPERANDO", status)
 		resetRunState()
+		releaseTravelGodState(humanoid)
 	end
 end)
 
@@ -2787,13 +3084,24 @@ mainLoopThread = task.spawn(function()
 			end
 
 			updateReturnLimit()
-			local carryCount = getEffectiveCarryCount()
-
 			local humanoid = getHumanoid()
 			local root = getRoot()
 			if not humanoid or not root or humanoid.Health <= 0 then
 				return
 			end
+
+			local requiredHealth = math.min(humanoid.MaxHealth, minimumReadyHealth)
+			if humanoid.Health < requiredHealth then
+				startupReleaseTime = math.max(startupReleaseTime, os.clock() + healthResumeDelay)
+				if os.clock() - lastHealthWaitLog >= healthWaitLogCooldown then
+					debugLog("HEALTH_WAIT", string.format("hp=%.1f/%.1f required=%.1f", humanoid.Health, humanoid.MaxHealth, requiredHealth))
+					lastHealthWaitLog = os.clock()
+				end
+				releaseAutopilot("RECUPERANDO VIDA...", status)
+				return
+			end
+
+			local carryCount = getEffectiveCarryCount()
 
 			local urgentFound, urgentTarget = hasHighPriorityTarget()
 			if urgentFound and urgentTarget and urgentTarget ~= currentTarget and not isReturning then
