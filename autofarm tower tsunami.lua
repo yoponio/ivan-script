@@ -1,10 +1,14 @@
 local scriptVersion = "tower-tsunami-dedicated-r1"
 
-print("--- INICIANDO OSAKA " .. scriptVersion .. " (TOWER TSUNAMI DEDICADO) ---")
+local gameRef = game
+local getService = gameRef and gameRef.GetService
+if type(getService) ~= "function" then
+	return
+end
 
-local Players = game:GetService("Players")
-local TS = game:GetService("TweenService")
-local RS = game:GetService("RunService")
+local Players = getService(gameRef, "Players")
+local TS = getService(gameRef, "TweenService")
+local RS = getService(gameRef, "RunService")
 
 local LP = Players.LocalPlayer
 
