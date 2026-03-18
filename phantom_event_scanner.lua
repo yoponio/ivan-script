@@ -33,19 +33,19 @@ local orbBlacklist = {}
 local instantMove = true
 local flySpeed = 420
 local safeDepth = -60
-local settleTime = 0.03
-local orbTouchTime = 0.05
+local settleTime = 0.01
+local orbTouchTime = 0.02
 local depositDistance = 6
-local promptRetryDelay = 0.08
-local orbRefreshDelay = 0.02
+local promptRetryDelay = 0.05
+local orbRefreshDelay = 0.01
 local depositTargetCount = 100
-local postTouchCountPolls = 10
-local postTouchCountPollDelay = 0.03
+local postTouchCountPolls = 6
+local postTouchCountPollDelay = 0.02
 local orbApproachHeight = -24
 local depositApproachHeight = 3.0
 local depositRetreatOffset = -30
 local orbRetreatOffset = -18
-local remoteTouchAttempts = 3
+local remoteTouchAttempts = 2
 local orbBlacklistSeconds = 8
 local maxStoredLogs = 250
 
@@ -391,20 +391,33 @@ local function getNearestOrb()
 	if not root then
 		return nil
 	end
+	local sources = {
+		workspace:FindFirstChild("PhantomEventParts"),
+		workspace:FindFirstChild("PhantomOrbParts"),
+		workspace,
+	}
 	local bestModel = nil
 	local bestPart = nil
 	local bestDistance = math.huge
-	for _, descendant in ipairs(workspace:GetDescendants()) do
-		if safeIsA(descendant, "Model") and isOrbModel(descendant) then
-			local path = safePath(descendant)
-			if not isBlacklisted(path) then
-				local part = resolveOrbPart(descendant)
-				if part then
-					local distance = (root.Position - part.Position).Magnitude
-					if distance < bestDistance then
-						bestDistance = distance
-						bestModel = descendant
-						bestPart = part
+	local scannedPaths = {}
+	for _, source in ipairs(sources) do
+		if source then
+			for _, descendant in ipairs(source:GetDescendants()) do
+				if safeIsA(descendant, "Model") and isOrbModel(descendant) then
+					local path = safePath(descendant)
+					if not scannedPaths[path] then
+						scannedPaths[path] = true
+						if not isBlacklisted(path) then
+							local part = resolveOrbPart(descendant)
+							if part then
+								local distance = (root.Position - part.Position).Magnitude
+								if distance < bestDistance then
+									bestDistance = distance
+									bestModel = descendant
+									bestPart = part
+								end
+							end
+						end
 					end
 				end
 			end
@@ -589,11 +602,6 @@ local function collectOrbCycle()
 		return
 	end
 	debugLog("ORB_TARGET", string.format("held=%d/%d dist=%.1f path=%s", heldCount, depositTargetCount, distance, safePath(orbModel)))
-	local approach = CFrame.new(orbPart.Position.X, resolveTravelY(orbPart.Position), orbPart.Position.Z)
-	if not moveTo(approach, flySpeed) then
-		return
-	end
-	taskWait(settleTime)
 	tryTouch(orbPart)
 	debugLog("ORB_TOUCH", safePath(orbPart))
 	taskWait(orbTouchTime)
