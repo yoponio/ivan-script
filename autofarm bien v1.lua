@@ -1583,10 +1583,13 @@ local function getClosestTarget()
 				local candidatePriority = getTargetPriority(candidate)
 				if candidatePriority > currentPriority then
 					currentTarget = candidate
+					local currentLabel = getTargetDisplayLabel(currentTarget)
+					local currentLevel = getTargetLevel(currentTarget)
+					local currentPath = currentTarget:GetFullName()
 					debugOnce(
 						"TARGET_LOCK",
-						"upgrade -> " .. getTargetDisplayLabel(currentTarget) .. " lvl=" .. tostring(getTargetLevel(currentTarget)) .. " tower=" .. tostring(towerPriorityMode) .. " | " .. currentTarget:GetFullName(),
-						currentTarget:GetFullName()
+						"upgrade -> " .. currentLabel .. " lvl=" .. tostring(currentLevel) .. " tower=" .. tostring(towerPriorityMode) .. " | " .. currentPath,
+						currentPath
 					)
 					return currentTarget, availableCount
 				end
@@ -1604,10 +1607,13 @@ local function getClosestTarget()
 		end
 	end
 	if currentTarget then
+		local currentLabel = getTargetDisplayLabel(currentTarget)
+		local currentLevel = getTargetLevel(currentTarget)
+		local currentPath = currentTarget:GetFullName()
 		debugOnce(
 			"TARGET_LOCK",
-			"pick -> " .. getTargetDisplayLabel(currentTarget) .. " lvl=" .. tostring(getTargetLevel(currentTarget)) .. " tower=" .. tostring(towerPriorityMode) .. " | " .. currentTarget:GetFullName(),
-			currentTarget:GetFullName()
+			"pick -> " .. currentLabel .. " lvl=" .. tostring(currentLevel) .. " tower=" .. tostring(towerPriorityMode) .. " | " .. currentPath,
+			currentPath
 		)
 	end
 	return currentTarget, availableCount
@@ -1973,9 +1979,16 @@ local function grabItem(target, runToken)
 		end
 		triggered = fireOk or triggered
 		if attempt == 1 or not fireOk or fireErr then
+			local triggerEventName = prompt and "GRAB_TRIGGER" or "GRAB_CLICK_TRIGGER"
+			local triggerPath = prompt and ("prompt=" .. prompt:GetFullName()) or ("click=" .. clickDetector:GetFullName())
+			local triggerDetails = triggerPath .. " ok=" .. tostring(fireOk)
+			if fireErr then
+				triggerDetails = triggerDetails .. " err=" .. tostring(fireErr)
+			end
+			triggerDetails = triggerDetails .. " attempt=" .. tostring(attempt)
 			debugLog(
-				prompt and "GRAB_TRIGGER" or "GRAB_CLICK_TRIGGER",
-				(prompt and ("prompt=" .. prompt:GetFullName()) or ("click=" .. clickDetector:GetFullName())) .. " ok=" .. tostring(fireOk) .. (fireErr and (" err=" .. tostring(fireErr)) or "") .. " attempt=" .. tostring(attempt)
+				triggerEventName,
+				triggerDetails
 			)
 		end
 
