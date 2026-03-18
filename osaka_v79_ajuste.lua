@@ -2254,6 +2254,16 @@ local function submitStPatricLoad(status, runToken)
 
 		local deadline = os.clock() + 2.5
 		while os.clock() < deadline do
+			if runToken ~= nil and not isOperationValid(runToken) then
+				debugLog("STP_SUBMIT_ABORT", "operacion invalidada esperando confirmacion de entrega")
+				isReturning = false
+				return false
+			end
+			if isRespawning then
+				debugLog("STP_SUBMIT_ABORT", "respawn detectado durante confirmacion de entrega")
+				isReturning = false
+				return false
+			end
 			local toolsNow = getFarmToolCount()
 			local carryNow = getEffectiveCarryCount()
 			if toolsNow < toolsBefore or carryNow <= 0 then
