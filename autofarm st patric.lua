@@ -65,6 +65,7 @@ local stPatricImmediateRepromptDelay = 0.18
 
 local invCount = 0
 local basePos = nil
+local travelBaseY = nil
 local sessionGrabCount = 0
 
 local blacklist = {}
@@ -1637,11 +1638,13 @@ end
 local function resolveTravelY(targetPos, forcedY, respectBaseClamp)
 	local fallenLimit = workspace.FallenPartsDestroyHeight or -500
 	local minSafeY = fallenLimit + 25
-	local referenceY = basePos and basePos.Y or targetPos.Y
+	local referenceY = travelBaseY or (basePos and basePos.Y) or targetPos.Y
 	local safeY = forcedY or (referenceY + safeDepth)
 	safeY = math.max(safeY, minSafeY)
 
-	if respectBaseClamp and basePos then
+	if respectBaseClamp and travelBaseY then
+		safeY = math.max(safeY, travelBaseY - 18)
+	elseif respectBaseClamp and basePos then
 		safeY = math.max(safeY, basePos.Y - 18)
 	end
 
@@ -3174,7 +3177,12 @@ charAddedConn = LP.CharacterAdded:Connect(function()
 		local root = getRoot()
 		if root then
 			invalidateRunToken("characterAdded")
-			basePos = root.Position
+			if not basePos then
+				basePos = root.Position
+			end
+			if travelBaseY == nil then
+				travelBaseY = root.Position.Y
+			end
 			flyValue.Value = root.CFrame
 			captureBaselineTools()
 			armStartupStabilization("respawn")
@@ -3226,6 +3234,7 @@ btn.MouseButton1Click:Connect(function()
 		invalidateRunToken("watchOn")
 		debugLog("STP_ON", string.format("base=(%.2f, %.2f, %.2f)", root.Position.X, root.Position.Y, root.Position.Z))
 		basePos = root.Position
+		travelBaseY = root.Position.Y
 		flyValue.Value = root.CFrame
 		root.Anchored = false
 		captureBaselineTools()
