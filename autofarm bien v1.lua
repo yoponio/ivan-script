@@ -2,7 +2,7 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
-local scriptVersion = "v79.2-r9-respawn-travel-fix"
+local scriptVersion = "v79.2-r8-final-polish"
 
 print("--- INICIANDO OSAKA " .. scriptVersion .. " (FREE SENTINEL FIX) ---")
 
@@ -25,9 +25,11 @@ local quietLogMode = false
 
 local farmSpeed = 500
 local firstTripSpeed = 220
-local maxTravelTweenDuration = 18
 local startupStabilizeTime = 0.45
 local safeDepth = -6.5
+local longTravelDistance = 1800
+local longTravelHeightOffset = 12
+local respawnToolSyncDelay = 2.0
 local depositRise = 0.08
 local returnAt = 2
 local returnApproachDepth = -8.5
@@ -52,7 +54,6 @@ local shieldRecoverStep = 0.08
 local shieldRecoverInterval = 0.30
 local shieldRecoverDelayAfterHit = 0.80
 local shieldExitStabilizeTime = 0.18
-local inventorySyncGracePeriod = 2.5
 
 local invCount = 0
 local basePos = nil
@@ -68,18 +69,14 @@ local scanInterval = 0.35
 local waveCleanupInterval = 1.0
 local nextWaveCleanup = 0
 local forceRescan = false
-local specialTargetCache = {}
-local lastSpecialTargetScan = 0
-local specialTargetScanInterval = 1.25
 local lastDepositAttempt = 0
 local lastBrainrotSpawnLog = 0
 local pendingBrainrotSpawnCount = 0
 local pendingBrainrotSpawnSample = nil
 local brainrotSpawnLogWindow = 0.35
 local logEnabled = true
-local maxStoredLogs = 500
+local maxStoredLogs = 250
 local storedLogs = {}
-local logBatchIndex = 1
 local lastScanSummary = ""
 local lastSelectionSummary = ""
 local lastScanHint = ""
@@ -97,6 +94,7 @@ local interferenceLogCooldown = 0.75
 local lastPlatformInterferenceLog = 0
 local lastAnchorInterferenceLog = 0
 local lastDesyncInterferenceLog = 0
+local toolSyncBlockedUntil = 0
 
 local flyValue = Instance.new("CFrameValue")
 
@@ -112,6 +110,7 @@ local mainButton = nil
 local towerButton = nil
 local shieldButton = nil
 local copyLogsButton = nil
+local clearLogsButton = nil
 local quietLogsButton = nil
 local shieldCFrame = nil
 local shieldBaseCFrame = nil
@@ -123,7 +122,6 @@ local characterPartStateBackup = {}
 local collisionModeLabel = "NORMAL"
 local baselineToolCounts = {}
 local farmToolTrackingReliable = false
-local inventorySyncBlockedUntil = 0
 local getCharacter
 local getHumanoid
 local getRoot
@@ -191,51 +189,8 @@ local filterOrder = {
 	"Common",
 }
 
-local luckyBlockKeywords = {
-	"luckyblock",
-	"lucky block",
-	"lucky_block",
-	"luckyblockrig",
-	"luckyblockrig_",
-	"block",
-}
-
-local specialEventKeywords = {
-	"event",
-	"special",
-	"limited",
-	"holiday",
-	"st patrick",
-	"stpatric",
-	"valentine",
-	"halloween",
-	"christmas",
-	"easter",
-	"phantom",
-	"tsunami",
-	"tormenta",
-	"tower",
-}
-
-local luckyBlockPriority = 88
-local specialLuckyBlockPriority = 130
-local isBrainrotCandidate
-
 local function resolveRarityName(name)
 	return rarityAliases[name] or name
-end
-
-local function hasKeyword(text, keywords)
-	if type(text) ~= "string" or text == "" then
-		return false
-	end
-	local lowered = string.lower(text)
-	for _, keyword in ipairs(keywords) do
-		if lowered:find(keyword, 1, true) then
-			return true
-		end
-	end
-	return false
 end
 
 local function updateCopyLogsButtonState()
@@ -243,7 +198,7 @@ local function updateCopyLogsButtonState()
 		return
 	end
 
-	copyLogsButton.Text = "COPIAR Y LIMPIAR (" .. tostring(#storedLogs) .. ")"
+	copyLogsButton.Text = "COPIAR LOGS (" .. tostring(#storedLogs) .. ")"
 end
 
 local noisyLogEvents = {
@@ -288,35 +243,8 @@ local function getStoredLogDump()
 	return table.concat(storedLogs, "\n")
 end
 
-local function extractLogTimestamp(message)
-	if type(message) ~= "string" then
-		return "n/a"
-	end
-	local timestamp = string.match(message, "^%[OSAKA%]%[(.-)%]%[")
-	return timestamp or "n/a"
-end
-
-local function buildLogBatchPayload()
-	if #storedLogs == 0 then
-		return getStoredLogDump()
-	end
-
-	local firstTimestamp = extractLogTimestamp(storedLogs[1])
-	local lastTimestamp = extractLogTimestamp(storedLogs[#storedLogs])
-	local header = string.format(
-		"[OSAKA_LOG_BATCH] batch=%d entries=%d first=%s last=%s version=%s",
-		logBatchIndex,
-		#storedLogs,
-		tostring(firstTimestamp),
-		tostring(lastTimestamp),
-		tostring(scriptVersion)
-	)
-
-	return header .. "\n" .. table.concat(storedLogs, "\n")
-end
-
 local function copyLogsToClipboard(status)
-	local payload = buildLogBatchPayload()
+	local payload = getStoredLogDump()
 	local copyFns = {setclipboard, toclipboard}
 	local copied = false
 	local copyError = nil
@@ -341,13 +269,10 @@ local function copyLogsToClipboard(status)
 	end
 
 	if status then
-		status.Text = copied and ("BATCH " .. tostring(logBatchIndex) .. " COPIADO: " .. tostring(#storedLogs)) or "NO SE PUDO COPIAR LOGS"
+		status.Text = copied and ("LOGS COPIADOS: " .. tostring(#storedLogs)) or "NO SE PUDO COPIAR LOGS"
 	end
 
-	debugLog(
-		copied and "LOG_COPY_OK" or "LOG_COPY_FAIL",
-		copied and ("batch=" .. tostring(logBatchIndex) .. " entries=" .. tostring(#storedLogs)) or tostring(copyError or "sin API de clipboard")
-	)
+	debugLog(copied and "LOG_COPY_OK" or "LOG_COPY_FAIL", copied and ("entries=" .. tostring(#storedLogs)) or tostring(copyError or "sin API de clipboard"))
 	return copied
 end
 
@@ -361,20 +286,6 @@ local function clearStoredLogs(status)
 	if status then
 		status.Text = "LOGS LIMPIADOS"
 	end
-end
-
-local function copyAndClearLogs(status)
-	local copied = copyLogsToClipboard(status)
-	if copied then
-		local copiedBatch = logBatchIndex
-		clearStoredLogs(status)
-		logBatchIndex = logBatchIndex + 1
-		if status then
-			status.Text = "BATCH " .. tostring(copiedBatch) .. " COPIADO Y LIMPIADO"
-		end
-		debugLog("LOG_BATCH_RESET", "copiado batch=" .. tostring(copiedBatch) .. " siguiente=" .. tostring(logBatchIndex))
-	end
-	return copied
 end
 
 local function debugOnce(eventName, details, key)
@@ -467,11 +378,6 @@ local function getOwnedToolCounts()
 	return counts
 end
 
-local function blockInventorySync(reason, duration)
-	inventorySyncBlockedUntil = math.max(inventorySyncBlockedUntil, os.clock() + (duration or inventorySyncGracePeriod))
-	debugLog("INV_SYNC_BLOCK", string.format("until=%.3f reason=%s", inventorySyncBlockedUntil, tostring(reason or "n/a")))
-end
-
 local function captureBaselineTools()
 	baselineToolCounts = getOwnedToolCounts()
 	farmToolTrackingReliable = false
@@ -481,7 +387,22 @@ local function captureBaselineTools()
 	end
 	table.sort(parts)
 	debugLog("BASELINE", "herramientas base capturadas: " .. (#parts > 0 and table.concat(parts, ",") or "vacio"))
-	blockInventorySync("baseline", 1.2)
+end
+
+local function blockToolSync(reason, duration, recaptureBaseline)
+	local syncDuration = duration or respawnToolSyncDelay
+	toolSyncBlockedUntil = math.max(toolSyncBlockedUntil, os.clock() + syncDuration)
+	debugLog("TOOL_SYNC", string.format("blocked %.2fs reason=%s", syncDuration, tostring(reason or "n/a")))
+
+	if recaptureBaseline then
+		task.delay(syncDuration, function()
+			if scriptClosed or not watchMode or isRespawning then
+				return
+			end
+			captureBaselineTools()
+			debugLog("TOOL_SYNC", "baseline recapturada reason=" .. tostring(reason or "n/a"))
+		end)
+	end
 end
 
 local function getFarmToolCount()
@@ -519,7 +440,7 @@ local function getEquippedToolCount()
 end
 
 local function syncInventoryCountFromTools()
-	if os.clock() < inventorySyncBlockedUntil then
+	if os.clock() < toolSyncBlockedUntil then
 		return 0
 	end
 	local detectedCount = getFarmToolCount()
@@ -964,17 +885,7 @@ local function getTargetRarity(target)
 end
 
 local function getTargetPriority(target)
-	if getTargetType(target) == "LUCKYBLOCK" then
-		return isSpecialEventLuckyBlock(target) and specialLuckyBlockPriority or luckyBlockPriority
-	end
 	return rarityPriority[getTargetRarity(target)] or 0
-end
-
-local function getTargetDisplayLabel(target)
-	if getTargetType(target) == "LUCKYBLOCK" then
-		return isSpecialEventLuckyBlock(target) and "LUCKYBLOCK_EVENT" or "LUCKYBLOCK"
-	end
-	return getTargetRarity(target)
 end
 
 local function parseLevelValue(value)
@@ -1036,38 +947,6 @@ local function getTowerPriority(target)
 	return 1, level
 end
 
-local function getTargetSearchText(target)
-	if not target then
-		return ""
-	end
-
-	local parts = {}
-	local function addText(value)
-		if type(value) == "string" and value ~= "" then
-			table.insert(parts, string.lower(value))
-		end
-	end
-
-	addText(target.Name)
-	if target.Parent then
-		addText(target.Parent.Name)
-	end
-
-	for _, descendant in ipairs(target:GetDescendants()) do
-		addText(descendant.Name)
-		if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
-			addText(descendant.Text)
-		elseif descendant:IsA("StringValue") then
-			addText(descendant.Value)
-		elseif descendant:IsA("ProximityPrompt") then
-			addText(descendant.ActionText)
-			addText(descendant.ObjectText)
-		end
-	end
-
-	return table.concat(parts, " | ")
-end
-
 local function findPrompt(target)
 	if not target then
 		return nil
@@ -1085,71 +964,7 @@ local function findPrompt(target)
 	return nil
 end
 
-local function findClickDetector(target)
-	if not target then
-		return nil
-	end
-
-	local detector = target:FindFirstChildWhichIsA("ClickDetector", true)
-	if detector then
-		return detector
-	end
-
-	if target.Parent then
-		return target.Parent:FindFirstChildWhichIsA("ClickDetector", true)
-	end
-
-	return nil
-end
-
-local function getTargetType(target)
-	if isBrainrotCandidate(target) then
-		return "BRAINROT"
-	end
-	if hasKeyword(getTargetSearchText(target), luckyBlockKeywords) then
-		return "LUCKYBLOCK"
-	end
-	return "UNKNOWN"
-end
-
-local function isLuckyBlockCandidate(target)
-	if not target or (not target:IsA("Model") and not target:IsA("BasePart")) then
-		return false
-	end
-	return getTargetType(target) == "LUCKYBLOCK"
-end
-
-local function isSpecialEventLuckyBlock(target)
-	if getTargetType(target) ~= "LUCKYBLOCK" then
-		return false
-	end
-	return hasKeyword(getTargetSearchText(target), specialEventKeywords)
-end
-
-local function refreshSpecialTargets(force)
-	local now = os.clock()
-	if not force and (now - lastSpecialTargetScan) < specialTargetScanInterval then
-		return specialTargetCache
-	end
-
-	lastSpecialTargetScan = now
-	specialTargetCache = {}
-	local seen = {}
-
-	for _, descendant in ipairs(workspace:GetDescendants()) do
-		if descendant:IsA("ProximityPrompt") or descendant:IsA("ClickDetector") then
-			local candidate = descendant:FindFirstAncestorWhichIsA("Model") or descendant.Parent
-			if candidate and not seen[candidate] and isLuckyBlockCandidate(candidate) then
-				seen[candidate] = true
-				table.insert(specialTargetCache, candidate)
-			end
-		end
-	end
-
-	return specialTargetCache
-end
-
-function isBrainrotCandidate(target)
+local function isBrainrotCandidate(target)
 	if not target or not target:IsA("Model") then
 		return false
 	end
@@ -1183,11 +998,11 @@ local function getInvalidTargetReason(target)
 		return "not_in_workspace"
 	end
 
-	if not target:IsA("Model") and not target:IsA("BasePart") then
+	if not target:IsA("Model") then
 		return "not_model"
 	end
 
-	if not findPrompt(target) and not findClickDetector(target) then
+	if not findPrompt(target) then
 		return "no_prompt"
 	end
 
@@ -1221,7 +1036,7 @@ local function isPreferredLiveTarget(target)
 
 	local brainrots = workspace:FindFirstChild("ActiveBrainrots")
 	if brainrots then
-		return target:IsDescendantOf(brainrots) or getTargetType(target) == "LUCKYBLOCK"
+		return target:IsDescendantOf(brainrots)
 	end
 
 	return true
@@ -1396,7 +1211,6 @@ local function refreshTargets(force)
 	local scanStats = {
 		folders = 0,
 		candidates = 0,
-		specialCandidates = 0,
 		filteredOut = 0,
 		disabledWithCandidates = {},
 		invalidReasons = {},
@@ -1459,16 +1273,6 @@ local function refreshTargets(force)
 		end
 	end
 
-	for _, specialTarget in ipairs(refreshSpecialTargets(force)) do
-		scanStats.specialCandidates = scanStats.specialCandidates + 1
-		local invalidReason = getInvalidTargetReason(specialTarget)
-		if not invalidReason then
-			appendTargetIfValid(targetCache, specialTarget)
-		else
-			noteScanReason(scanStats.invalidReasons, invalidReason)
-		end
-	end
-
 	if #targetCache == 0 then
 		scanStats.usedFallback = true
 		collectTargetsFromContainer(workspace, targetCache, scanStats)
@@ -1528,9 +1332,8 @@ local function refreshTargets(force)
 	end
 	local summary = table.concat({
 		tostring(#targetCache),
-		tostring(topTarget and (getTargetType(topTarget) == "LUCKYBLOCK" and "LUCKYBLOCK" or getTargetRarity(topTarget)) or "none"),
+		tostring(topTarget and getTargetRarity(topTarget) or "none"),
 		tostring(scanStats.candidates),
-		tostring(scanStats.specialCandidates),
 		formatReasonCounts(scanStats.invalidReasons),
 		getEnabledFiltersSummary(),
 		tostring(scanStats.usedFallback),
@@ -1538,13 +1341,12 @@ local function refreshTargets(force)
 	debugOnce(
 		"SCAN",
 		string.format(
-			"targets=%d top=%s tower=%s folders=%d candidates=%d special=%d filtered=%d invalid=%s fallback=%s filters=%s",
+			"targets=%d top=%s tower=%s folders=%d candidates=%d filtered=%d invalid=%s fallback=%s filters=%s",
 			#targetCache,
-			topTarget and (getTargetType(topTarget) == "LUCKYBLOCK" and (isSpecialEventLuckyBlock(topTarget) and "LUCKYBLOCK_EVENT" or "LUCKYBLOCK") or getTargetRarity(topTarget)) or "none",
+			topTarget and getTargetRarity(topTarget) or "none",
 			tostring(towerPriorityMode),
 			scanStats.folders,
 			scanStats.candidates,
-			scanStats.specialCandidates,
 			scanStats.filteredOut,
 			formatReasonCounts(scanStats.invalidReasons),
 			tostring(scanStats.usedFallback),
@@ -1560,9 +1362,6 @@ local function hasHighPriorityTarget()
 	refreshTargets(false)
 	for _, target in ipairs(targetCache) do
 		local rarityName = getTargetRarity(target)
-		if getTargetType(target) == "LUCKYBLOCK" and isSpecialEventLuckyBlock(target) then
-			return true, target
-		end
 		if rarityName == "Infinite"
 			or rarityName == "Divine"
 			or rarityName == "Celestial"
@@ -1583,13 +1382,10 @@ local function getClosestTarget()
 				local candidatePriority = getTargetPriority(candidate)
 				if candidatePriority > currentPriority then
 					currentTarget = candidate
-					local currentLabel = getTargetDisplayLabel(currentTarget)
-					local currentLevel = getTargetLevel(currentTarget)
-					local currentPath = currentTarget:GetFullName()
 					debugOnce(
 						"TARGET_LOCK",
-						"upgrade -> " .. currentLabel .. " lvl=" .. tostring(currentLevel) .. " tower=" .. tostring(towerPriorityMode) .. " | " .. currentPath,
-						currentPath
+						"upgrade -> " .. getTargetRarity(currentTarget) .. " lvl=" .. tostring(getTargetLevel(currentTarget)) .. " tower=" .. tostring(towerPriorityMode) .. " | " .. currentTarget:GetFullName(),
+						currentTarget:GetFullName()
 					)
 					return currentTarget, availableCount
 				end
@@ -1607,13 +1403,10 @@ local function getClosestTarget()
 		end
 	end
 	if currentTarget then
-		local currentLabel = getTargetDisplayLabel(currentTarget)
-		local currentLevel = getTargetLevel(currentTarget)
-		local currentPath = currentTarget:GetFullName()
 		debugOnce(
 			"TARGET_LOCK",
-			"pick -> " .. currentLabel .. " lvl=" .. tostring(currentLevel) .. " tower=" .. tostring(towerPriorityMode) .. " | " .. currentPath,
-			currentPath
+			"pick -> " .. getTargetRarity(currentTarget) .. " lvl=" .. tostring(getTargetLevel(currentTarget)) .. " tower=" .. tostring(towerPriorityMode) .. " | " .. currentTarget:GetFullName(),
+			currentTarget:GetFullName()
 		)
 	end
 	return currentTarget, availableCount
@@ -1628,7 +1421,7 @@ local function tweenTo(goal, runToken)
 	end
 
 	local speed = firstTripPending and firstTripSpeed or farmSpeed
-	local duration = math.clamp(distance / speed, 0.05, maxTravelTweenDuration)
+	local duration = math.clamp(distance / speed, 0.05, 3)
 	debugLog("TRAVEL_TWEEN", string.format("distance=%.2f speed=%.2f duration=%.2f", distance, speed, duration))
 	local tween = TS:Create(flyValue, TweenInfo.new(duration, Enum.EasingStyle.Linear), {Value = goal})
 	local finished = false
@@ -1683,6 +1476,17 @@ local function resolveTravelY(targetPos, forcedY, respectBaseClamp)
 	return safeY
 end
 
+local function getAdaptiveTravelY(rootPos, targetPos, forcedY, respectBaseClamp)
+	local safeY = resolveTravelY(targetPos, forcedY, respectBaseClamp)
+	if not forcedY and basePos and rootPos then
+		local travelDistance = (rootPos - targetPos).Magnitude
+		if travelDistance >= longTravelDistance then
+			safeY = math.max(safeY, basePos.Y + longTravelHeightOffset, targetPos.Y + 6)
+		end
+	end
+	return safeY
+end
+
 local function ghostTravel(targetPos, forcedY, respectBaseClamp, runToken)
 	local root = getRoot()
 	if not root then
@@ -1690,7 +1494,7 @@ local function ghostTravel(targetPos, forcedY, respectBaseClamp, runToken)
 		return false
 	end
 
-	local safeY = resolveTravelY(targetPos, forcedY, respectBaseClamp ~= false)
+	local safeY = getAdaptiveTravelY(root.Position, targetPos, forcedY, respectBaseClamp ~= false)
 	debugLog(
 		"TRAVEL_PATH",
 		string.format("from=(%.2f, %.2f, %.2f) to=(%.2f, %.2f, %.2f) safeY=%.2f", root.Position.X, root.Position.Y, root.Position.Z, targetPos.X, targetPos.Y, targetPos.Z, safeY)
@@ -1722,14 +1526,18 @@ local function ghostReturnTravel(targetPos, runToken)
 		return false
 	end
 
+	local travelDistance = (root.Position - targetPos).Magnitude
 	local cruiseY = math.max(basePos.Y + safeDepth, root.Position.Y - 1.5)
+	if travelDistance >= longTravelDistance then
+		cruiseY = math.max(cruiseY, basePos.Y + longTravelHeightOffset, targetPos.Y + 6)
+	end
 	cruiseY = resolveTravelY(targetPos, cruiseY, false)
 	return ghostTravel(targetPos, cruiseY, false, runToken)
 end
 
 local function emergencyRecover(status, runToken)
 	if runToken ~= nil and not isOperationValid(runToken) then
-		debugLog("RECOVER_ABORT", "operacion invalidada antes de recover")
+		debugLog("TRAVEL_ABORT", "recover cancelado por token invalido")
 		return false
 	end
 	local root = getRoot()
@@ -1740,7 +1548,7 @@ local function emergencyRecover(status, runToken)
 		or Vector3.new(root.Position.X, root.Position.Y, root.Position.Z)
 	local recovered = ghostTravel(fallback, nil, nil, runToken)
 	if runToken ~= nil and not isOperationValid(runToken) then
-		debugLog("RECOVER_ABORT", "operacion invalidada durante recover")
+		debugLog("TRAVEL_ABORT", "recover abortado tras fallback")
 		return false
 	end
 	status.Text = "RECUPERANDO RUTA..."
@@ -1866,9 +1674,9 @@ local function grabItem(target, runToken)
 	debugLog(
 		"GRAB_START",
 		string.format(
-			"target=%s type=%s lvl=%d dist=%.2f inv=%d tools=%d tower=%s",
+			"target=%s rarity=%s lvl=%d dist=%.2f inv=%d tools=%d tower=%s",
 			target.Name,
-			getTargetDisplayLabel(target),
+			getTargetRarity(target),
 			getTargetLevel(target),
 			(root and getTargetPosition(target)) and (root.Position - getTargetPosition(target)).Magnitude or -1,
 			invCount,
@@ -1877,9 +1685,8 @@ local function grabItem(target, runToken)
 		)
 	)
 	local prompt = findPrompt(target)
-	local clickDetector = findClickDetector(target)
-	if not prompt and not clickDetector then
-		debugLog("GRAB_FAIL", "sin prompt/clickdetector")
+	if not prompt then
+		debugLog("GRAB_FAIL", "sin prompt")
 		isGrabbing = false
 		if mainButton then
 			updateButtonState(mainButton)
@@ -1889,7 +1696,7 @@ local function grabItem(target, runToken)
 	local activeBrainrots = workspace:FindFirstChild("ActiveBrainrots")
 
 	local function isClaimConfirmed()
-		if getTargetType(target) == "BRAINROT" and target and activeBrainrots and not target:IsDescendantOf(activeBrainrots) then
+		if target and activeBrainrots and not target:IsDescendantOf(activeBrainrots) then
 			return true, "target salio de ActiveBrainrots"
 		end
 		if prompt and prompt.Parent then
@@ -1900,40 +1707,27 @@ local function grabItem(target, runToken)
 				return true, "prompt salio de ActiveBrainrots"
 			end
 		end
-		if clickDetector and not findClickDetector(target) then
-			return true, "clickdetector ya no existe"
-		end
-		if target and not target:IsDescendantOf(workspace) then
-			return true, "target removido de workspace"
-		end
 		return false, nil
 	end
 
 	local triggered = false
-	if prompt then
-		pcall(function()
-			prompt.RequiresLineOfSight = false
-			prompt.MaxActivationDistance = 100
-			prompt.HoldDuration = 0
-		end)
-		debugLog(
-			"GRAB_PROMPT",
-			string.format(
-				"path=%s action=%s object=%s max=%.1f hold=%.2f enabled=%s",
-				prompt:GetFullName(),
-				tostring(prompt.ActionText),
-				tostring(prompt.ObjectText),
-				prompt.MaxActivationDistance,
-				prompt.HoldDuration,
-				tostring(prompt.Enabled)
-			)
+	pcall(function()
+		prompt.RequiresLineOfSight = false
+		prompt.MaxActivationDistance = 100
+		prompt.HoldDuration = 0
+	end)
+	debugLog(
+		"GRAB_PROMPT",
+		string.format(
+			"path=%s action=%s object=%s max=%.1f hold=%.2f enabled=%s",
+			prompt:GetFullName(),
+			tostring(prompt.ActionText),
+			tostring(prompt.ObjectText),
+			prompt.MaxActivationDistance,
+			prompt.HoldDuration,
+			tostring(prompt.Enabled)
 		)
-	elseif clickDetector then
-		debugLog(
-			"GRAB_CLICK",
-			string.format("path=%s max=%.1f", clickDetector:GetFullName(), clickDetector.MaxActivationDistance)
-		)
-	end
+	)
 
 	task.wait(0.15)
 
@@ -1964,31 +1758,14 @@ local function grabItem(target, runToken)
 			return true
 		end
 
-		local fireOk, fireErr
-		if prompt then
-			fireOk, fireErr = pcall(function()
-				fireproximityprompt(prompt)
-			end)
-		elseif type(fireclickdetector) == "function" and clickDetector then
-			fireOk, fireErr = pcall(function()
-				fireclickdetector(clickDetector)
-			end)
-		else
-			fireOk = false
-			fireErr = "sin fireclickdetector"
-		end
+		local fireOk, fireErr = pcall(function()
+			fireproximityprompt(prompt)
+		end)
 		triggered = fireOk or triggered
 		if attempt == 1 or not fireOk or fireErr then
-			local triggerEventName = prompt and "GRAB_TRIGGER" or "GRAB_CLICK_TRIGGER"
-			local triggerPath = prompt and ("prompt=" .. prompt:GetFullName()) or ("click=" .. clickDetector:GetFullName())
-			local triggerDetails = triggerPath .. " ok=" .. tostring(fireOk)
-			if fireErr then
-				triggerDetails = triggerDetails .. " err=" .. tostring(fireErr)
-			end
-			triggerDetails = triggerDetails .. " attempt=" .. tostring(attempt)
 			debugLog(
-				triggerEventName,
-				triggerDetails
+				"GRAB_TRIGGER",
+				"prompt=" .. prompt:GetFullName() .. " ok=" .. tostring(fireOk) .. (fireErr and (" err=" .. tostring(fireErr)) or "") .. " attempt=" .. tostring(attempt)
 			)
 		end
 
@@ -2050,8 +1827,8 @@ local function grabItem(target, runToken)
 			end
 			return true
 		end
-		if not findPrompt(target) and not findClickDetector(target) then
-			debugLog("GRAB_OK", prompt and "prompt ya no existe" or "clickdetector ya no existe")
+		if not findPrompt(target) then
+			debugLog("GRAB_OK", "prompt ya no existe")
 			isGrabbing = false
 			if mainButton then
 				updateButtonState(mainButton)
@@ -2416,7 +2193,7 @@ Instance.new("UICorner", quietLogsBtn)
 quietLogsButton = quietLogsBtn
 
 local copyLogsBtn = Instance.new("TextButton", panel)
-copyLogsBtn.Size = UDim2.new(1, 0, 0, 24)
+copyLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
 copyLogsBtn.Position = UDim2.new(0, 0, 0, 114)
 copyLogsBtn.TextColor3 = Color3.new(1, 1, 1)
 copyLogsBtn.BackgroundColor3 = Color3.fromRGB(65, 90, 140)
@@ -2425,6 +2202,18 @@ copyLogsBtn.TextSize = 11
 copyLogsBtn.BorderSizePixel = 0
 Instance.new("UICorner", copyLogsBtn)
 copyLogsButton = copyLogsBtn
+
+local clearLogsBtn = Instance.new("TextButton", panel)
+clearLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
+clearLogsBtn.Position = UDim2.new(0.5, 2, 0, 114)
+clearLogsBtn.Text = "LIMPIAR LOGS"
+clearLogsBtn.TextColor3 = Color3.new(1, 1, 1)
+clearLogsBtn.BackgroundColor3 = Color3.fromRGB(110, 55, 55)
+clearLogsBtn.Font = Enum.Font.GothamBold
+clearLogsBtn.TextSize = 11
+clearLogsBtn.BorderSizePixel = 0
+Instance.new("UICorner", clearLogsBtn)
+clearLogsButton = clearLogsBtn
 
 local scroll = Instance.new("ScrollingFrame", frame)
 scroll.Size = UDim2.new(1, -12, 0, 146)
@@ -2512,6 +2301,7 @@ local function shutdownScript()
 	towerButton = nil
 	shieldButton = nil
 	copyLogsButton = nil
+	clearLogsButton = nil
 	quietLogsButton = nil
 
 	if sg then
@@ -2617,8 +2407,15 @@ copyLogsBtn.MouseButton1Click:Connect(function()
 	if scriptClosed then
 		return
 	end
-	copyAndClearLogs(status)
+	copyLogsToClipboard(status)
 	updateCopyLogsButtonState()
+end)
+
+clearLogsBtn.MouseButton1Click:Connect(function()
+	if scriptClosed then
+		return
+	end
+	clearStoredLogs(status)
 end)
 
 for _, name in ipairs(filterOrder) do
@@ -2823,7 +2620,6 @@ local function bindCharacter(btnRef, statusRef)
 				return
 			end
 			isRespawning = true
-			blockInventorySync("death", 3.5)
 			debugLog("DEATH", "personaje murio, watchMode=" .. tostring(watchMode))
 			stopFarm("RESPAWN DETECTADO - REARMANDO...", btnRef, statusRef, true)
 		end)
@@ -2854,8 +2650,8 @@ charAddedConn = LP.CharacterAdded:Connect(function()
 			resetRunState()
 			basePos = root.Position
 			flyValue.Value = root.CFrame
-			blockInventorySync("characterAdded", 3.5)
 			captureBaselineTools()
+			blockToolSync("respawn", respawnToolSyncDelay, true)
 			armStartupStabilization("respawn")
 			isRespawning = false
 			releaseAutopilot("VIGILANDO LIBRE...", status)
@@ -2911,8 +2707,8 @@ btn.MouseButton1Click:Connect(function()
 		basePos = root.Position
 		flyValue.Value = root.CFrame
 		root.Anchored = false
-		blockInventorySync("watchOn", 2.0)
 		captureBaselineTools()
+		blockToolSync("watchOn", 0.8, false)
 		armStartupStabilization("watchOn")
 		resetRunState()
 		bindBrainrotWatcher()
@@ -2970,7 +2766,7 @@ mainLoopThread = task.spawn(function()
 			if urgentFound and urgentTarget and urgentTarget ~= currentTarget and not isReturning then
 				debugLog("TARGET_URGENT", urgentTarget:GetFullName())
 				currentTarget = urgentTarget
-				status.Text = "PRIORITARIO: " .. getTargetDisplayLabel(urgentTarget)
+				status.Text = "OBJETIVO PRIORITARIO DETECTADO"
 			end
 
 			if (returnLocked or carryCount >= returnAt) and not isReturning then
@@ -3016,8 +2812,8 @@ mainLoopThread = task.spawn(function()
 
 			local dist = (root.Position - targetPos).Magnitude
 			if dist > 8 then
-				debugLog("TRAVEL_START", string.format("target=%s type=%s dist=%.2f", target:GetFullName(), getTargetDisplayLabel(target), dist))
-				status.Text = "VIAJANDO A " .. getTargetDisplayLabel(target)
+				debugLog("TRAVEL_START", string.format("target=%s rarity=%s dist=%.2f", target:GetFullName(), getTargetRarity(target), dist))
+				status.Text = "VIAJANDO A " .. getTargetRarity(target)
 				local reached = ghostTravel(targetPos, nil, nil, runToken)
 				if not reached then
 					debugLog("TRAVEL_RECOVER", "fallo viaje principal")
