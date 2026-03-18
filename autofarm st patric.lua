@@ -2646,6 +2646,7 @@ local function submitStPatricLoad(status, runToken)
 	end)
 
 	local toolsBefore = getFarmToolCount()
+	local successfulConfirms = 0
 	for attempt = 1, 3 do
 		if runToken ~= nil and not isOperationValid(runToken) then
 			debugLog("STP_SUBMIT_ABORT", "operacion invalidada durante entrega")
@@ -2660,6 +2661,9 @@ local function submitStPatricLoad(status, runToken)
 
 		task.wait(stPatricPostTriggerDelay)
 		local confirmOk, dialogSeen = confirmStPatricDialog(status)
+		if confirmOk then
+			successfulConfirms = successfulConfirms + 1
+		end
 		if not confirmOk and not dialogSeen then
 			task.wait(stPatricImmediateRepromptDelay)
 			local reopenOk, reopenErr = pcall(function()
@@ -2670,6 +2674,9 @@ local function submitStPatricLoad(status, runToken)
 			local retryConfirmOk, retryDialogSeen = confirmStPatricDialog(status)
 			confirmOk = confirmOk or retryConfirmOk
 			dialogSeen = dialogSeen or retryDialogSeen
+			if retryConfirmOk then
+				successfulConfirms = successfulConfirms + 1
+			end
 		end
 		local drainedConfirmations = 0
 		local repromptDone = false
@@ -2717,7 +2724,7 @@ local function submitStPatricLoad(status, runToken)
 			if drainedConfirmations >= stPatricRequiredDrainChecks and (confirmOk or dialogSeen or not promptData.enabled) then
 				return finalizeStPatricSubmitSuccess(status, runToken, carryCount, toolsBefore, toolsNow, dialogScore, dialogPath, "STP_SUBMIT_OK")
 			end
-			if confirmOk and not dialogVisible and os.clock() >= confirmSuccessAt then
+			if confirmOk and (not dialogVisible or successfulConfirms >= 2) and os.clock() >= confirmSuccessAt then
 				return finalizeStPatricSubmitSuccess(status, runToken, carryCount, toolsBefore, toolsNow, dialogScore, dialogPath, "STP_SUBMIT_CONFIRM_OK")
 			end
 			if confirmOk and repromptDone and not dialogVisible and os.clock() >= assumeSuccessAt then
@@ -2725,6 +2732,10 @@ local function submitStPatricLoad(status, runToken)
 			end
 			task.wait(stPatricSubmitCheckInterval)
 		end
+	end
+
+	if successfulConfirms >= 2 then
+		return finalizeStPatricSubmitSuccess(status, runToken, carryCount, toolsBefore, getFarmToolCount(), 0, "repeat-confirm", "STP_SUBMIT_MULTI_CONFIRM")
 	end
 
 	debugLog("STP_SUBMIT_FAIL", "sin confirmacion de entrega")
