@@ -24,6 +24,9 @@ local candidateEntries = {}
 local highlightObjects = {}
 local highlightEnabled = false
 local highlightRefreshQueued = false
+local logUiRefreshQueued = false
+local scanInProgress = false
+local scanBatchSize = 250
 
 local function safeIsA(instance, className)
 	local ok, result = pcall(function()
@@ -59,6 +62,42 @@ local function appendCandidateLog(message)
 	trimArray(candidateLogs, maxStoredLogs)
 	if candidateCopyButton then
 		candidateCopyButton.Text = "COPIAR CAND. (" .. tostring(#candidateLogs) .. ")"
+	end
+end
+
+local function refreshLogUi()
+	logUiRefreshQueued = false
+	if countLabel then
+		countLabel.Text = "LOGS: " .. tostring(#storedLogs)
+	end
+	if copyButton then
+		copyButton.Text = "COPIAR LOGS (" .. tostring(#storedLogs) .. ")"
+	end
+	if logBox then
+		local dump = table.concat(storedLogs, "\n")
+		logBox.Text = dump
+		pcall(function()
+			logBox.CursorPosition = #dump + 1
+		end)
+	end
+end
+
+local function scheduleLogUiRefresh()
+	if logUiRefreshQueued then
+		return
+	end
+	logUiRefreshQueued = true
+	task.delay(0.1, function()
+		local ok, err = xpcall(refreshLogUi, debug.traceback)
+		if not ok then
+			warn("[PHANTOM][UI_REFRESH_ERR] " .. tostring(err))
+		end
+	end)
+end
+
+local function yieldIfNeeded(index)
+	if index % scanBatchSize == 0 then
+		task.wait()
 	end
 end
 
@@ -164,19 +203,7 @@ local function appendStoredLog(message)
 	if statusLabel then
 		statusLabel.Text = message
 	end
-	if countLabel then
-		countLabel.Text = "LOGS: " .. tostring(#storedLogs)
-	end
-	if copyButton then
-		copyButton.Text = "COPIAR LOGS (" .. tostring(#storedLogs) .. ")"
-	end
-	if logBox then
-		local dump = table.concat(storedLogs, "\n")
-		logBox.Text = dump
-		pcall(function()
-			logBox.CursorPosition = #dump + 1
-		end)
-	end
+	scheduleLogUiRefresh()
 end
 
 local function log(eventName, details)
@@ -446,7 +473,8 @@ end
 
 local function collectMatches(root, label, limit)
 	local results = {}
-	for _, descendant in ipairs(root:GetDescendants()) do
+	local descendants = root:GetDescendants()
+	for index, descendant in ipairs(descendants) do
 		local className = safeClassName(descendant)
 		if includeClasses[className] then
 			local score, matched = scoreInstance(descendant)
@@ -461,6 +489,7 @@ local function collectMatches(root, label, limit)
 				})
 			end
 		end
+		yieldIfNeeded(index)
 	end
 
 	table.sort(results, function(a, b)
@@ -551,7 +580,8 @@ local function inspectNearestPrompts(resetState)
 		return
 	end
 	local prompts = {}
-	for _, descendant in ipairs(workspace:GetDescendants()) do
+	local descendants = workspace:GetDescendants()
+	for index, descendant in ipairs(descendants) do
 		if safeIsA(descendant, "ProximityPrompt") then
 			local parent = descendant.Parent
 			local position = safeWorldPosition(parent) or safeWorldPosition(descendant)
@@ -564,6 +594,7 @@ local function inspectNearestPrompts(resetState)
 				})
 			end
 		end
+		yieldIfNeeded(index)
 	end
 	table.sort(prompts, function(a, b)
 		return a.distance < b.distance
@@ -807,11 +838,31 @@ nearButton.MouseButton1Click:Connect(function()
 	inspectNearestPrompts(true)
 end)
 fullButton.MouseButton1Click:Connect(function()
+	if scanInProgress then
+		log("FULL_BUSY", "ya hay un escaneo completo en curso")
+		return
+	end
+	scanInProgress = true
+	fullButton.Text = "ESCANEANDO..."
+	fullButton.BackgroundColor3 = Color3.fromRGB(90, 80, 45)
 	log("FULL", "iniciando escaneo completo")
-	resetCandidateState()
-	scanWorkspace(false)
-	scanGui(false)
-	inspectNearestPrompts(false)
+	task.spawn(function()
+		local ok, err = xpcall(function()
+			resetCandidateState()
+			scanWorkspace(false)
+			task.wait()
+			scanGui(false)
+			task.wait()
+			inspectNearestPrompts(false)
+			log("FULL_OK", "escaneo completo terminado")
+		end, debug.traceback)
+		scanInProgress = false
+		fullButton.Text = "FULL SCAN"
+		fullButton.BackgroundColor3 = Color3.fromRGB(45, 50, 55)
+		if not ok then
+			log("FULL_ERR", tostring(err))
+		end
+	end)
 end)
 copyButton.MouseButton1Click:Connect(copyLogsToClipboard)
 candidateCopyButton.MouseButton1Click:Connect(copyCandidatesToClipboard)
