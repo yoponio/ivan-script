@@ -389,8 +389,14 @@ local function getStPatricYesDebugCandidates(limit)
 			local text = safeText(descendant)
 			local name = safeName(descendant)
 			local path = safeInstancePath(descendant)
-			local visible = safeGuiVisible(descendant)
-			local strictScore = scoreYesButton(descendant)
+			local visible = false
+			pcall(function()
+				visible = safeGuiVisible(descendant)
+			end)
+			local strictScore = 0
+			pcall(function()
+				strictScore = scoreYesButton and scoreYesButton(descendant) or 0
+			end)
 			local looseScore = getGuiTextMatchScore(text)
 				+ math.max(0, getGuiTextMatchScore(name) - 2)
 				+ math.max(0, getGuiTextMatchScore(path) - 4)
@@ -465,7 +471,7 @@ local function findExactStPatricYesButton(playerGui)
 	local choiceRoot = choiceGui:FindFirstChild("Choice", true)
 	local choices = choiceRoot and choiceRoot:FindFirstChild("Choices")
 	local yesButton = choices and choices:FindFirstChild("Yes")
-	if yesButton and safeIsA(yesButton, "GuiButton") and safeGuiVisible(yesButton) then
+	if yesButton and safeIsA(yesButton, "GuiButton") then
 		return yesButton, 1000 + scoreYesButton(yesButton)
 	end
 
@@ -2385,6 +2391,16 @@ local function activateStPatricYesButton(button)
 		activated = activated or signalOk
 
 		signalOk = pcall(function()
+			firesignal(button.MouseButton1Down, 0, 0)
+		end)
+		activated = activated or signalOk
+
+		signalOk = pcall(function()
+			firesignal(button.MouseButton1Up, 0, 0)
+		end)
+		activated = activated or signalOk
+
+		signalOk = pcall(function()
 			firesignal(button.Activated, nil, 1)
 		end)
 		activated = activated or signalOk
@@ -2410,7 +2426,7 @@ local function confirmStPatricDialog(status)
 			return ok
 		end
 
-		task.wait(0.1)
+		task.wait(0.05)
 	end
 
 	debugLog("STP_CONFIRM_FAIL", "yes button no detectado")
