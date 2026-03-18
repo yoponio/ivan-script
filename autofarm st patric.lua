@@ -1621,7 +1621,13 @@ end
 local function resolveTravelY(targetPos, forcedY, respectBaseClamp)
 	local fallenLimit = workspace.FallenPartsDestroyHeight or -500
 	local minSafeY = fallenLimit + 25
-	local referenceY = basePos and basePos.Y or targetPos.Y
+	local referenceY = targetPos.Y
+	if basePos then
+		local baseDelta = math.abs(basePos.Y - targetPos.Y)
+		if baseDelta <= 25 then
+			referenceY = basePos.Y
+		end
+	end
 	local safeY = forcedY or (referenceY + safeDepth)
 	safeY = math.max(safeY, minSafeY)
 
@@ -2452,7 +2458,28 @@ local function confirmStPatricDialog(status)
 	return false
 end
 
+local function getRootPositionSummary()
+	local root = getRoot()
+	if not root then
+		return "root=nil"
+	end
+	return string.format("root=(%.2f, %.2f, %.2f)", root.Position.X, root.Position.Y, root.Position.Z)
+end
+
 local function finalizeStPatricSubmit(status, carryBefore, toolsBefore, toolsNow, reason)
+	debugLog(
+		"STP_SUBMIT_FINALIZE",
+		string.format(
+			"reason=%s carry_before=%d inv=%d tools_before=%d tools_now=%d returnLocked=%s %s",
+			tostring(reason),
+			carryBefore,
+			invCount,
+			toolsBefore,
+			toolsNow,
+			tostring(returnLocked),
+			getRootPositionSummary()
+		)
+	)
 	captureBaselineTools()
 	invCount = 0
 	grabAttempts = 0
@@ -2481,6 +2508,18 @@ local function submitStPatricLoad(status, runToken)
 	end
 
 	local carryCount = getEffectiveCarryCount()
+	debugLog(
+		"STP_SUBMIT_START",
+		string.format(
+			"carry=%d inv=%d returnLocked=%s isReturning=%s cooldown=%.2f %s",
+			carryCount,
+			invCount,
+			tostring(returnLocked),
+			tostring(isReturning),
+			math.max(0, stPatricSubmitCooldown - (os.clock() - stPatricLastSubmitAttempt)),
+			getRootPositionSummary()
+		)
+	)
 	if carryCount <= 0 then
 		debugLog("STP_SUBMIT_SKIP", "sin carga para entregar")
 		invCount = 0
@@ -2509,6 +2548,10 @@ local function submitStPatricLoad(status, runToken)
 		isReturning = false
 		return false
 	end
+	debugLog(
+		"STP_SUBMIT_PROMPT",
+		string.format("path=%s score=%d %s", safeInstancePath(prompt), promptScore, getRootPositionSummary())
+	)
 
 	local promptPos = getWorldPositionFromInstance(prompt)
 	if promptPos then
@@ -2537,12 +2580,41 @@ local function submitStPatricLoad(status, runToken)
 			fireproximityprompt(prompt)
 		end)
 		debugLog("STP_SUBMIT_TRIGGER", "prompt=" .. safeInstancePath(prompt) .. " ok=" .. tostring(fireOk) .. (fireErr and (" err=" .. tostring(fireErr)) or "") .. " attempt=" .. tostring(attempt))
+		debugLog(
+			"STP_SUBMIT_STATE",
+			string.format(
+				"attempt=%d carry=%d inv=%d tools_before=%d returnLocked=%s isReturning=%s %s",
+				attempt,
+				getEffectiveCarryCount(),
+				invCount,
+				toolsBefore,
+				tostring(returnLocked),
+				tostring(isReturning),
+				getRootPositionSummary()
+			)
+		)
 
 		task.wait(0.2)
 		local confirmOk = confirmStPatricDialog(status)
-		local confirmAt = confirmOk and os.clock() or nil
+		debugLog(
+			"STP_CONFIRM_RESULT",
+			string.format(
+				"attempt=%d ok=%s carry=%d inv=%d tools_now=%d %s",
+				attempt,
+				tostring(confirmOk),
+				getEffectiveCarryCount(),
+				invCount,
+				getFarmToolCount(),
+				getRootPositionSummary()
+			)
+		)
+		if confirmOk then
+			task.wait(0.25)
+			return finalizeStPatricSubmit(status, carryCount, toolsBefore, getFarmToolCount(), "yes_confirmed")
+		end
 
 		local deadline = os.clock() + 4.0
+		local lastWaitLog = 0
 		while os.clock() < deadline do
 			if runToken ~= nil and not isOperationValid(runToken) then
 				debugLog("STP_SUBMIT_ABORT", "operacion invalidada esperando confirmacion de entrega")
@@ -2559,11 +2631,36 @@ local function submitStPatricLoad(status, runToken)
 			if toolsNow < toolsBefore or carryNow <= 0 then
 				return finalizeStPatricSubmit(status, carryCount, toolsBefore, toolsNow, carryNow <= 0 and "carry_zero" or "tools_changed")
 			end
-			if confirmAt and (os.clock() - confirmAt) >= 0.9 then
-				return finalizeStPatricSubmit(status, carryCount, toolsBefore, toolsNow, "yes_confirmed")
+			if os.clock() - lastWaitLog >= 0.5 then
+				lastWaitLog = os.clock()
+				debugLog(
+					"STP_SUBMIT_WAIT",
+					string.format(
+						"attempt=%d carry_now=%d inv=%d tools_now=%d returnLocked=%s isReturning=%s %s",
+						attempt,
+						carryNow,
+						invCount,
+						toolsNow,
+						tostring(returnLocked),
+						tostring(isReturning),
+						getRootPositionSummary()
+					)
+				)
 			end
 			task.wait(0.1)
 		end
+		debugLog(
+			"STP_SUBMIT_RETRY",
+			string.format(
+				"attempt=%d carry=%d inv=%d tools_before=%d tools_now=%d %s",
+				attempt,
+				getEffectiveCarryCount(),
+				invCount,
+				toolsBefore,
+				getFarmToolCount(),
+				getRootPositionSummary()
+			)
+		)
 	end
 
 	debugLog("STP_SUBMIT_FAIL", "sin confirmacion de entrega")
