@@ -2604,6 +2604,10 @@ local function submitStPatricLoad(status, runToken)
 
 	local carryCount = getEffectiveCarryCount()
 	if carryCount <= 0 then
+		returnLocked = false
+		isReturning = false
+		currentTarget = nil
+		debugLog("STP_RETURN_CLEAR", "sin carry al intentar entregar")
 		return false
 	end
 
@@ -2724,6 +2728,9 @@ local function submitStPatricLoad(status, runToken)
 	end
 
 	debugLog("STP_SUBMIT_FAIL", "sin confirmacion de entrega")
+	if getEffectiveCarryCount() <= 0 then
+		return finalizeStPatricSubmitSuccess(status, runToken, carryCount, toolsBefore, getFarmToolCount(), 0, "none", "STP_SUBMIT_FAIL_CLEAR")
+	end
 	isReturning = false
 	releaseAutopilot("STP: ENTREGA FALLIDA", status)
 	return false
@@ -3353,6 +3360,15 @@ mainLoopThread = task.spawn(function()
 
 			updateReturnLimit()
 			local carryCount = getEffectiveCarryCount()
+
+			if returnLocked and carryCount <= 0 then
+				returnLocked = false
+				isReturning = false
+				currentTarget = nil
+				debugLog("STP_RETURN_CLEAR", "carry agotado, liberando retorno")
+				releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
+				return
+			end
 
 			local humanoid = getHumanoid()
 			local root = getRoot()
