@@ -19,7 +19,6 @@ local isGrabbing = false
 local returnLocked = false
 local scriptClosed = false
 local towerPriorityMode = false
-local luckyPriorityMode = true
 local eventShieldMode = false
 local isRespawning = false
 local quietLogMode = false
@@ -111,7 +110,6 @@ local seatedConn = nil
 local mainLoopThread = nil
 local mainButton = nil
 local towerButton = nil
-local luckyButton = nil
 local shieldButton = nil
 local copyLogsButton = nil
 local quietLogsButton = nil
@@ -219,7 +217,7 @@ local specialEventKeywords = {
 	"tower",
 }
 
-local luckyBlockPriority = 5
+local luckyBlockPriority = 88
 local specialLuckyBlockPriority = 130
 local isBrainrotCandidate
 
@@ -724,15 +722,6 @@ local function updateTowerButtonState()
 	towerButton.TextColor3 = Color3.new(1, 1, 1)
 end
 
-local function updateLuckyButtonState()
-	if scriptClosed or not luckyButton then
-		return
-	end
-	luckyButton.Text = luckyPriorityMode and "LB ON" or "LB OFF"
-	luckyButton.BackgroundColor3 = luckyPriorityMode and Color3.fromRGB(200, 165, 45) or Color3.fromRGB(35, 40, 45)
-	luckyButton.TextColor3 = Color3.new(1, 1, 1)
-end
-
 local function updateShieldButtonState()
 	if scriptClosed or not shieldButton then
 		return
@@ -976,9 +965,6 @@ end
 
 local function getTargetPriority(target)
 	if getTargetType(target) == "LUCKYBLOCK" then
-		if not luckyPriorityMode then
-			return 0
-		end
 		return isSpecialEventLuckyBlock(target) and specialLuckyBlockPriority or luckyBlockPriority
 	end
 	return rarityPriority[getTargetRarity(target)] or 0
@@ -1141,11 +1127,6 @@ local function isSpecialEventLuckyBlock(target)
 end
 
 local function refreshSpecialTargets(force)
-	if not luckyPriorityMode then
-		specialTargetCache = {}
-		return specialTargetCache
-	end
-
 	local now = os.clock()
 	if not force and (now - lastSpecialTargetScan) < specialTargetScanInterval then
 		return specialTargetCache
@@ -1579,7 +1560,7 @@ local function hasHighPriorityTarget()
 	refreshTargets(false)
 	for _, target in ipairs(targetCache) do
 		local rarityName = getTargetRarity(target)
-		if luckyPriorityMode and getTargetType(target) == "LUCKYBLOCK" and isSpecialEventLuckyBlock(target) then
+		if getTargetType(target) == "LUCKYBLOCK" and isSpecialEventLuckyBlock(target) then
 			return true, target
 		end
 		if rarityName == "Infinite"
@@ -2291,31 +2272,21 @@ local expanded = false
 local filtersExpanded = false
 
 local towerBtn = Instance.new("TextButton", sg)
-towerBtn.Size = UDim2.new(0, 54, 0, 24)
+towerBtn.Size = UDim2.new(0, 84, 0, 24)
 towerBtn.Position = UDim2.new(0.05, 0, 0.3, -28)
 towerBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
 towerBtn.Font = Enum.Font.GothamBold
-towerBtn.TextSize = 10
+towerBtn.TextSize = 11
 towerBtn.BorderSizePixel = 0
 Instance.new("UICorner", towerBtn)
 towerButton = towerBtn
 
-local luckyBtn = Instance.new("TextButton", sg)
-luckyBtn.Size = UDim2.new(0, 54, 0, 24)
-luckyBtn.Position = UDim2.new(0.05, 59, 0.3, -28)
-luckyBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
-luckyBtn.Font = Enum.Font.GothamBold
-luckyBtn.TextSize = 10
-luckyBtn.BorderSizePixel = 0
-Instance.new("UICorner", luckyBtn)
-luckyButton = luckyBtn
-
 local shieldBtn = Instance.new("TextButton", sg)
-shieldBtn.Size = UDim2.new(0, 54, 0, 24)
-shieldBtn.Position = UDim2.new(0.05, 118, 0.3, -28)
+shieldBtn.Size = UDim2.new(0, 84, 0, 24)
+shieldBtn.Position = UDim2.new(0.05, 88, 0.3, -28)
 shieldBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 45)
 shieldBtn.Font = Enum.Font.GothamBold
-shieldBtn.TextSize = 10
+shieldBtn.TextSize = 11
 shieldBtn.BorderSizePixel = 0
 Instance.new("UICorner", shieldBtn)
 shieldButton = shieldBtn
@@ -2526,7 +2497,6 @@ local function shutdownScript()
 
 	mainButton = nil
 	towerButton = nil
-	luckyButton = nil
 	shieldButton = nil
 	copyLogsButton = nil
 	quietLogsButton = nil
@@ -2623,21 +2593,6 @@ towerBtn.MouseButton1Click:Connect(function()
 	end
 end)
 
-luckyBtn.MouseButton1Click:Connect(function()
-	if scriptClosed then
-		return
-	end
-	luckyPriorityMode = not luckyPriorityMode
-	debugLog("LUCKY_MODE", "enabled=" .. tostring(luckyPriorityMode))
-	specialTargetCache = {}
-	lastSpecialTargetScan = 0
-	refreshTargets(true)
-	updateLuckyButtonState()
-	if status then
-		status.Text = luckyPriorityMode and "LUCKY BLOCKS: EVENTOS ON | NORMALES SECUNDARIOS" or "LUCKY BLOCKS: PRIORIDAD OFF"
-	end
-end)
-
 shieldBtn.MouseButton1Click:Connect(function()
 	if scriptClosed then
 		return
@@ -2677,7 +2632,6 @@ listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(applyLayout)
 applyLayout()
 updateReturnLimit()
 updateTowerButtonState()
-updateLuckyButtonState()
 updateShieldButtonState()
 updateQuietLogsButtonState()
 updateCopyLogsButtonState()
