@@ -3098,13 +3098,17 @@ mainLoopThread = task.spawn(function()
 				return
 			end
 
-			if (returnLocked or carryCount >= returnAt) and not isReturning then
+			if returnLocked or carryCount >= returnAt then
+				returnLocked = true
+				if isReturning then
+					status.Text = "STP: LLEVANDO A OLLA..."
+					return
+				end
 				debugLog("STP_RETURN", "returnLocked=" .. tostring(returnLocked) .. " inv=" .. tostring(invCount) .. " carry=" .. tostring(carryCount))
 				if os.clock() - stPatricLastSubmitAttempt < stPatricSubmitCooldown then
 					releaseAutopilot("STP: ESPERANDO OLLA...", status)
 					return
 				end
-				returnLocked = true
 				submitStPatricLoad(status, runToken)
 				return
 			end
@@ -3193,6 +3197,18 @@ mainLoopThread = task.spawn(function()
 					task.wait(0.12)
 				end
 			else
+				local carryAfterFail = getEffectiveCarryCount()
+				if returnLocked or carryAfterFail >= returnAt then
+					returnLocked = true
+					grabAttempts = 0
+					currentTarget = nil
+					debugLog("STP_RETURN", "grab cancelado por limite carry=" .. tostring(carryAfterFail) .. "/" .. tostring(returnAt))
+					if not isReturning then
+						submitStPatricLoad(status, runToken)
+					end
+					return
+				end
+
 				local currentHumanoid = getHumanoid()
 				if currentHumanoid then
 					logHealthState("grab_fail", currentHumanoid)
