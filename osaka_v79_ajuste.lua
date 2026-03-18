@@ -66,6 +66,10 @@ local waveCleanupInterval = 1.0
 local nextWaveCleanup = 0
 local forceRescan = false
 local lastDepositAttempt = 0
+local lastBrainrotSpawnLog = 0
+local pendingBrainrotSpawnCount = 0
+local pendingBrainrotSpawnSample = nil
+local brainrotSpawnLogWindow = 0.35
 local logEnabled = true
 local maxStoredLogs = 250
 local storedLogs = {}
@@ -591,6 +595,9 @@ local function restoreFromShield()
 	end
 
 	task.delay(shieldExitStabilizeTime, function()
+		if scriptClosed then
+			return
+		end
 		local delayedRoot = getRoot()
 		local delayedHumanoid = getHumanoid()
 		if delayedRoot then
@@ -1514,6 +1521,15 @@ local function grabItem(target, runToken)
 			end
 			return false
 		end
+		local claimedBeforeFire, claimedBeforeFireReason = isClaimConfirmed()
+		if claimedBeforeFire then
+			debugLog("GRAB_OK", claimedBeforeFireReason)
+			isGrabbing = false
+			if mainButton then
+				updateButtonState(mainButton)
+			end
+			return true
+		end
 		if not isValidTarget(target) then
 			debugLog("GRAB_OK", "target desaparecio antes de terminar")
 			isGrabbing = false
@@ -1779,7 +1795,19 @@ local function bindBrainrotWatcher()
 	brainrotAddedConn = brainrots.DescendantAdded:Connect(function(desc)
 		if desc.Name == "RenderedBrainrot" and desc:IsA("Model") then
 			forceRescan = true
-			debugLog("BRAINROT_SPAWN", desc:GetFullName())
+			pendingBrainrotSpawnCount = pendingBrainrotSpawnCount + 1
+			pendingBrainrotSpawnSample = pendingBrainrotSpawnSample or desc:GetFullName()
+
+			local now = os.clock()
+			if now - lastBrainrotSpawnLog >= brainrotSpawnLogWindow then
+				debugLog(
+					"BRAINROT_SPAWN",
+					string.format("batch=%d sample=%s", pendingBrainrotSpawnCount, tostring(pendingBrainrotSpawnSample or desc:GetFullName()))
+				)
+				lastBrainrotSpawnLog = now
+				pendingBrainrotSpawnCount = 0
+				pendingBrainrotSpawnSample = nil
+			end
 		end
 	end)
 end
@@ -1963,6 +1991,7 @@ local function shutdownScript()
 		return
 	end
 
+	logEnabled = false
 	scriptClosed = true
 	isRespawning = false
 	watchMode = false
@@ -1970,6 +1999,7 @@ local function shutdownScript()
 	isReturning = false
 	isGrabbing = false
 	returnLocked = false
+	eventShieldMode = false
 	forceRescan = false
 	currentTarget = nil
 	blacklist = {}
@@ -1980,7 +2010,13 @@ local function shutdownScript()
 	lastScanHint = ""
 	startupReleaseTime = 0
 	firstTripPending = false
-	invalidateRunToken("shutdown")
+	shieldCFrame = nil
+	shieldBaseCFrame = nil
+	shieldRetreatOffset = 0
+	shieldLastHealth = nil
+	shieldLastDamageTime = 0
+	shieldLastRecoverTime = 0
+	activeRunToken = activeRunToken + 1
 
 	local humanoid = getHumanoid()
 	local root = getRoot()
@@ -2015,8 +2051,6 @@ local function shutdownScript()
 		sg:Destroy()
 		sg = nil
 	end
-	logEnabled = false
-	print("--- OSAKA CERRADO COMPLETAMENTE ---")
 end
 
 local function applyLayout()
