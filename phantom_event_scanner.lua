@@ -53,6 +53,7 @@ local infoLabel
 local getCharacter
 local getHumanoid
 local getRoot
+local getDepositPrompt
 
 local function updateCopyLogsButton()
 	if copyLogsButton then
@@ -391,25 +392,23 @@ local function getNearestOrb()
 	for _, descendant in ipairs(workspace:GetDescendants()) do
 		if safeIsA(descendant, "Model") and isOrbModel(descendant) then
 			local path = safePath(descendant)
-			if isBlacklisted(path) then
-				continue
-			end
-			local part = resolveOrbPart(descendant)
-			if part then
-				local distance = (root.Position - part.Position).Magnitude
-				if distance < bestDistance then
-					bestDistance = distance
-					bestModel = descendant
-					bestPart = part
+			if not isBlacklisted(path) then
+				local part = resolveOrbPart(descendant)
+				if part then
+					local distance = (root.Position - part.Position).Magnitude
+					if distance < bestDistance then
+						bestDistance = distance
+						bestModel = descendant
+						bestPart = part
+					end
 				end
 			end
 		end
-		::continue::
 	end
 	return bestModel, bestPart, bestDistance
 end
 
-local function getDepositPrompt()
+getDepositPrompt = function()
 	local phantomMap = workspace:FindFirstChild("PhantomMap")
 	local ghostCannon = phantomMap and phantomMap:FindFirstChild("GhostCannon")
 	local part = ghostCannon and ghostCannon:FindFirstChild("Part")
