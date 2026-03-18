@@ -78,6 +78,9 @@ local lastActivePromptState = {}
 local exportChunkIndex = 1
 local uiRefreshQueued = false
 local nearbyPromptScanEnabled = false
+local lastGodHumanoidSnapshot = ""
+local lastGodRootSnapshot = ""
+local lastCharacterPartsSnapshot = ""
 
 local sharedEnv = nil
 pcall(function()
@@ -111,6 +114,7 @@ local captureModes = {
 	{"ALL", "todo"},
 	{"CORE", "sin MOVE"},
 	{"TOWER", "tower puro"},
+	{"GODTRACE", "vida y estados"},
 }
 
 local captureModeAllow = {
@@ -143,6 +147,15 @@ local captureModeAllow = {
 		STATE = true,
 		WORLD = true,
 		ERROR = true,
+	},
+	GODTRACE = {
+		FLOW = true,
+		HEALTH = true,
+		STATE = true,
+		MOVE = true,
+		INV = true,
+		ERROR = true,
+		GOD = true,
 	},
 }
 
@@ -553,6 +566,81 @@ local function logInventoryIfChanged(reason)
 	end
 end
 
+local function getCharacterPartsSnapshot(character)
+	if not character then
+		return ""
+	end
+	local totalParts = 0
+	local nonCollideCount = 0
+	local nonTouchCount = 0
+	local anchoredCount = 0
+	for _, descendant in ipairs(character:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			totalParts = totalParts + 1
+			if not descendant.CanCollide then
+				nonCollideCount = nonCollideCount + 1
+			end
+			if not descendant.CanTouch then
+				nonTouchCount = nonTouchCount + 1
+			end
+			if descendant.Anchored then
+				anchoredCount = anchoredCount + 1
+			end
+		end
+	end
+	return string.format("parts=%d nocollide=%d notouch=%d anchored=%d", totalParts, nonCollideCount, nonTouchCount, anchoredCount)
+end
+
+local function pollGodTraceSignals()
+	local character = LP.Character
+	local humanoid = getHumanoid()
+	local root = getRoot()
+
+	if humanoid then
+		local humanoidSnapshot = string.format(
+			"hp=%.1f/%.1f ws=%.1f jp=%.1f useJump=%s hip=%.1f platform=%s state=%s sit=%s breakOnDeath=%s autoRotate=%s",
+			humanoid.Health,
+			humanoid.MaxHealth,
+			humanoid.WalkSpeed,
+			humanoid.JumpPower,
+			tostring(humanoid.UseJumpPower),
+			humanoid.HipHeight,
+			tostring(humanoid.PlatformStand),
+			humanoid:GetState().Name,
+			tostring(humanoid.Sit),
+			tostring(humanoid.BreakJointsOnDeath),
+			tostring(humanoid.AutoRotate)
+		)
+		if humanoidSnapshot ~= lastGodHumanoidSnapshot then
+			lastGodHumanoidSnapshot = humanoidSnapshot
+			log("GOD", "HUMANOID", "Humanoid", humanoidSnapshot)
+		end
+	end
+
+	if root then
+		local rootSnapshot = string.format(
+			"pos=(%s) vel=%.2f anchored=%s canCollide=%s canTouch=%s",
+			formatVector(root.Position),
+			root.AssemblyLinearVelocity.Magnitude,
+			tostring(root.Anchored),
+			tostring(root.CanCollide),
+			tostring(root.CanTouch)
+		)
+		if rootSnapshot ~= lastGodRootSnapshot then
+			lastGodRootSnapshot = rootSnapshot
+			log("GOD", "ROOT", "HumanoidRootPart", rootSnapshot)
+		end
+	end
+
+	if character then
+		local partsSnapshot = getCharacterPartsSnapshot(character)
+		if partsSnapshot ~= lastCharacterPartsSnapshot then
+			lastCharacterPartsSnapshot = partsSnapshot
+			log("GOD", "PARTS", safeName(character), partsSnapshot)
+		end
+	end
+end
+
 local function serializeScalar(value)
 	local valueType = typeof and typeof(value) or type(value)
 	if valueType == "Vector3" then
@@ -859,6 +947,9 @@ local function bindCharacterHooks(character)
 
 	bindToolHooks(character)
 	lastMovePosition = nil
+	lastGodHumanoidSnapshot = ""
+	lastGodRootSnapshot = ""
+	lastCharacterPartsSnapshot = ""
 	log("FLOW", "CHARACTER", safeName(character), safePath(character))
 	end
 
@@ -1227,6 +1318,9 @@ mainLoopThread = task.spawn(function()
 			pollSharedState()
 			pollMovement(now)
 			logInventoryIfChanged("poll")
+			if captureMode == "GODTRACE" then
+				pollGodTraceSignals()
+			end
 			if now - lastGuiPollAt >= guiPollInterval then
 				lastGuiPollAt = now
 				pollGuiSignals()
