@@ -2,7 +2,7 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
-local scriptVersion = "stpatric-dedicated-r1"
+local scriptVersion = "stpatric-v2-test"
 
 print("--- INICIANDO OSAKA " .. scriptVersion .. " (ST PATRIC DEDICADO) ---")
 
@@ -22,8 +22,8 @@ local towerPriorityMode = false
 local eventShieldMode = false
 local isRespawning = false
 
-local farmSpeed = 500
-local firstTripSpeed = 500
+local farmSpeed = 700
+local firstTripSpeed = 700
 local startupStabilizeTime = 0.45
 local safeDepth = -6.5
 local depositRise = 0.08
@@ -84,7 +84,7 @@ local lastDepositAttempt = 0
 local lastBrainrotSpawnLog = 0
 local pendingBrainrotSpawnCount = 0
 local pendingBrainrotSpawnSample = nil
-local brainrotSpawnLogWindow = 0.35
+local brainrotSpawnLogWindow = 1.25
 local logEnabled = true
 local maxStoredLogs = 250
 local storedLogs = {}
@@ -117,6 +117,7 @@ local characterPartStateBackup = {}
 local collisionModeLabel = "NORMAL"
 local baselineToolCounts = {}
 local farmToolTrackingReliable = false
+local stPatricSubmitPromptCache = nil
 local getCharacter
 local getHumanoid
 local getRoot
@@ -2359,6 +2360,17 @@ local function scoreStPatricPrompt(prompt)
 end
 
 local function findStPatricSubmitPrompt()
+	if stPatricSubmitPromptCache
+		and safeIsA(stPatricSubmitPromptCache, "ProximityPrompt")
+		and safeIsDescendantOf(stPatricSubmitPromptCache, workspace)
+	then
+		local cachedScore = scoreStPatricPrompt(stPatricSubmitPromptCache)
+		if cachedScore > 0 then
+			debugLog("STP_POT", "prompt=" .. safeInstancePath(stPatricSubmitPromptCache) .. " score=" .. tostring(cachedScore) .. " cached=true")
+			return stPatricSubmitPromptCache, cachedScore
+		end
+	end
+
 	local bestPrompt = nil
 	local bestScore = 0
 
@@ -2373,8 +2385,10 @@ local function findStPatricSubmitPrompt()
 	end
 
 	if bestPrompt then
+		stPatricSubmitPromptCache = bestPrompt
 		debugLog("STP_POT", "prompt=" .. safeInstancePath(bestPrompt) .. " score=" .. tostring(bestScore))
 	else
+		stPatricSubmitPromptCache = nil
 		debugLog("STP_POT", "sin prompt de olla")
 	end
 
@@ -2766,10 +2780,12 @@ local function bindBrainrotWatcher()
 
 			local now = os.clock()
 			if now - lastBrainrotSpawnLog >= brainrotSpawnLogWindow then
-				debugLog(
-					"BRAINROT_SPAWN",
-					string.format("batch=%d sample=%s", pendingBrainrotSpawnCount, tostring(pendingBrainrotSpawnSample or desc:GetFullName()))
-				)
+				if pendingBrainrotSpawnCount >= 2 then
+					debugLog(
+						"BRAINROT_SPAWN",
+						string.format("batch=%d sample=%s", pendingBrainrotSpawnCount, tostring(pendingBrainrotSpawnSample or desc:GetFullName()))
+					)
+				end
 				lastBrainrotSpawnLog = now
 				pendingBrainrotSpawnCount = 0
 				pendingBrainrotSpawnSample = nil
