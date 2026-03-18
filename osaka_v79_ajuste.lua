@@ -92,6 +92,8 @@ local towerButton = nil
 local shieldButton = nil
 local copyLogsButton = nil
 local eventScanButton = nil
+local pendingEventScan = false
+local eventScanRunning = false
 local shieldCFrame = nil
 local shieldBaseCFrame = nil
 local shieldRetreatOffset = 0
@@ -221,9 +223,17 @@ local function scanStPatricEvent(status)
 	debugLog("EVENT_SCAN_START", "st_patric workspace_scan")
 
 	local matches = {}
-	local descendants = workspace:GetDescendants()
-	debugLog("EVENT_SCAN_INFO", "descendants=" .. tostring(#descendants))
-	for index, descendant in ipairs(descendants) do
+	local scanRoots = {
+		{label = "workspace", root = workspace},
+		{label = "playergui", root = LP:FindFirstChildOfClass("PlayerGui")},
+	}
+
+	for _, scanRoot in ipairs(scanRoots) do
+		local rootInstance = scanRoot.root
+		if rootInstance then
+			local descendants = rootInstance:GetDescendants()
+			debugLog("EVENT_SCAN_INFO", scanRoot.label .. " descendants=" .. tostring(#descendants))
+			for index, descendant in ipairs(descendants) do
 		local reasons = {}
 		local score = 0
 
@@ -256,18 +266,39 @@ local function scanStPatricEvent(status)
 			end
 		end
 
-		if score > 0 then
-			table.insert(matches, {
-				node = descendant,
-				score = score,
-				reasons = table.concat(reasons, ","),
-			})
-		end
+				if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
+					local matchedText, textKeyword = containsKeyword(descendant.Text)
+					if matchedText then
+						score = score + 3
+						table.insert(reasons, "text=" .. tostring(textKeyword))
+					end
+				end
 
-		if index % 250 == 0 then
-			task.wait()
-			if scriptClosed then
-				return
+				if descendant:IsA("ClickDetector") then
+					local parent = descendant.Parent
+					if parent then
+						local matchedParent, parentKeyword = containsKeyword(parent.Name)
+						if matchedParent then
+							score = score + 2
+							table.insert(reasons, "click_parent=" .. tostring(parentKeyword))
+						end
+					end
+				end
+
+				if score > 0 then
+					table.insert(matches, {
+						node = descendant,
+						score = score,
+						reasons = table.concat(reasons, ","),
+					})
+				end
+
+				if index % 250 == 0 then
+					task.wait()
+					if scriptClosed then
+						return
+					end
+				end
 			end
 		end
 	end
@@ -327,6 +358,26 @@ local function runStPatricScan(status)
 			status.Text = "SCAN STP: ERROR"
 		end
 	end
+end
+
+local function queueStPatricScan(status)
+	if scriptClosed then
+		return
+	end
+
+	if eventScanRunning then
+		if status then
+			status.Text = "SCAN STP: YA CORRIENDO"
+		end
+		debugLog("EVENT_SCAN_BUSY", "scan already running")
+		return
+	end
+
+	pendingEventScan = true
+	if status then
+		status.Text = "SCAN STP: EN COLA"
+	end
+	debugLog("EVENT_SCAN_QUEUE", "queued")
 end
 
 local function updateCopyLogsButtonState()
@@ -2323,14 +2374,14 @@ eventScanBtn.MouseButton1Click:Connect(function()
 	if scriptClosed then
 		return
 	end
-	runStPatricScan(status)
+	queueStPatricScan(status)
 end)
 
 eventScanBtn.Activated:Connect(function()
 	if scriptClosed then
 		return
 	end
-	runStPatricScan(status)
+	queueStPatricScan(status)
 end)
 
 for _, name in ipairs(filterOrder) do
@@ -2547,6 +2598,15 @@ mainLoopThread = task.spawn(function()
 		local ok, err = xpcall(function()
 			if scriptClosed then
 				return "break"
+			end
+
+			if pendingEventScan and not eventScanRunning then
+				pendingEventScan = false
+				eventScanRunning = true
+				task.spawn(function()
+					runStPatricScan(status)
+					eventScanRunning = false
+				end)
 			end
 
 			if eventShieldMode then
