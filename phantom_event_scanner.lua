@@ -2,7 +2,7 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
-local scriptVersion = "phantom-autofarm-r2-safe-gate"
+local scriptVersion = "phantom-autofarm-r3-underground"
 
 print("--- INICIANDO OSAKA " .. scriptVersion .. " (PHANTOM DEDICADO) ---")
 
@@ -509,8 +509,8 @@ local function tryTouch(part)
 	end
 	root.AssemblyLinearVelocity = zeroVector
 	root.AssemblyAngularVelocity = zeroVector
-	safeTravel(part.Position, orbApproachHeight)
 	if type(firetouchinterest) == "function" then
+		-- Fire from current safe underground position — no vertical ascent needed
 		for _ = 1, remoteTouchAttempts do
 			pcall(function()
 				firetouchinterest(root, part, 0)
@@ -519,9 +519,11 @@ local function tryTouch(part)
 			end)
 		end
 	else
+		-- Fallback: physically approach only when firetouchinterest unavailable
+		safeTravel(part.Position, orbApproachHeight)
 		root.CFrame = part.CFrame + Vector3.new(0, orbApproachHeight, 0)
+		retreatUnderPosition(part.Position, orbRetreatOffset)
 	end
-	retreatUnderPosition(part.Position, orbRetreatOffset)
 	taskWait(orbTouchTime)
 	return true
 end
