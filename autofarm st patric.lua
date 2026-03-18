@@ -375,6 +375,8 @@ local function getStPatricDialogContextScore(root)
 	return score
 end
 
+local scoreYesButton
+
 local function getStPatricYesDebugCandidates(limit)
 	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
 	if not playerGui then
@@ -2272,7 +2274,7 @@ local function findStPatricSubmitPrompt()
 	return bestPrompt, bestScore
 end
 
-local function scoreYesButton(button)
+scoreYesButton = function(button)
 	if not button or not safeIsA(button, "GuiButton") then
 		return 0
 	end
@@ -3109,6 +3111,11 @@ mainLoopThread = task.spawn(function()
 				return
 			end
 
+			if isReturning then
+				releaseAutopilot("STP: ENTREGANDO...", status)
+				return
+			end
+
 			local target, availableCount = getStPatricTarget()
 			if not target then
 				debugLog("STP_NO_TARGET", "inv=" .. tostring(invCount) .. " returnLocked=" .. tostring(returnLocked))
@@ -3221,6 +3228,8 @@ mainLoopThread = task.spawn(function()
 		end, debug.traceback)
 
 		if not ok then
+			isReturning = false
+			isGrabbing = false
 			debugLog("MAIN_LOOP_ERROR", tostring(err))
 			releaseAutopilot("ERROR EN MAIN LOOP", status)
 		end
