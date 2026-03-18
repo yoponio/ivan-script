@@ -2,7 +2,7 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
-local VERSION = "phantom-server-hopper-r1"
+local VERSION = "phantom-server-hopper-r2"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -27,6 +27,7 @@ local visitedServerIds = {}
 local stopRequested = false
 local hopperRunning = false
 local manualSkipRequested = false
+local teleportInProgress = false
 local uiStatusLabel
 local uiLogBox
 local uiActionButton
@@ -36,15 +37,18 @@ local storedLogs = {}
 local maxStoredLogs = 220
 local scanBatchSize = 250
 local runHopper
+local forceHopToNextServer
 
 local keywords = {
+	"ghost ship",
+	"phantom ship",
 	"phantom",
+	"ghost",
+	"spirit",
+	"soul",
 	"orb",
 	"orbs",
 	"sphere",
-	"spirit",
-	"soul",
-	"ghost",
 	"boat",
 	"ship",
 	"dock",
@@ -61,6 +65,43 @@ local keywords = {
 	"collect",
 	"pickup",
 	"pick up",
+}
+
+local strongKeywords = {
+	["ghost ship"] = true,
+	["phantom ship"] = true,
+	["phantom"] = true,
+	["ghost"] = true,
+	["spirit"] = true,
+	["soul"] = true,
+}
+
+local phraseKeywords = {
+	["ghost ship"] = true,
+	["phantom ship"] = true,
+}
+
+local nauticalKeywords = {
+	["boat"] = true,
+	["ship"] = true,
+	["dock"] = true,
+	["harbor"] = true,
+	["harbour"] = true,
+	["port"] = true,
+	["raft"] = true,
+}
+
+local ignoredPathFragments = {
+	"SpinWheels.Phantom",
+	"ActiveBrainrots.",
+	"Workspace.Debris.BillboardTemplate",
+	"LuckyBlockRig_",
+	"GameObjects.Enemies.",
+	"TimerGui",
+	"TakePrompt",
+	"TradePrompt",
+	"GenRateOverhead",
+	"SurfaceGui.Frame.Mutation",
 }
 
 local includeClasses = {
@@ -222,35 +263,65 @@ local function yieldIfNeeded(index)
 	end
 	end
 
+local function shouldIgnorePath(path)
+	if type(path) ~= "string" or path == "" then
+		return false
+	end
+	local loweredPath = string.lower(path)
+	for _, fragment in ipairs(ignoredPathFragments) do
+		if loweredPath:find(string.lower(fragment), 1, true) then
+			return true
+		end
+	end
+	return false
+	end
+
 local function scoreInstance(instance)
 	if not instance then
-		return 0, ""
+		return 0, "", 0, 0, false
 	end
-	local haystack = safeText(instance) .. " | " .. string.lower(safePath(instance))
+	local path = safePath(instance)
+	if shouldIgnorePath(path) then
+		return 0, "", 0, 0, false
+	end
+	local haystack = safeText(instance) .. " | " .. string.lower(path)
 	local score = 0
 	local matched = {}
+	local strongHitCount = 0
+	local nauticalHitCount = 0
+	local phraseHit = false
 	for _, keyword in ipairs(keywords) do
 		if haystack:find(keyword, 1, true) then
-			score = score + 5
+			local weight = strongKeywords[keyword] and 10 or 4
+			score = score + weight
 			table.insert(matched, keyword)
+			if strongKeywords[keyword] then
+				strongHitCount = strongHitCount + 1
+			end
+			if nauticalKeywords[keyword] then
+				nauticalHitCount = nauticalHitCount + 1
+			end
+			if phraseKeywords[keyword] then
+				phraseHit = true
+			end
 		end
 	end
 	if safeIsA(instance, "ProximityPrompt") then
-		score = score + 12
+		score = score + (strongHitCount > 0 and 12 or 2)
 	end
 	if safeIsA(instance, "ClickDetector") then
-		score = score + 7
+		score = score + (strongHitCount > 0 and 7 or 2)
 	end
 	if safeIsA(instance, "Tool") then
-		score = score + 4
+		score = score + (strongHitCount > 0 and 4 or 1)
 	end
 	if safeIsA(instance, "TextButton") then
-		score = score + 6
+		score = score + (strongHitCount > 0 and 6 or 2)
 	end
 	if safeIsA(instance, "BillboardGui") or safeIsA(instance, "SurfaceGui") then
-		score = score + 3
+		score = score + (strongHitCount > 0 and 3 or 1)
 	end
-	return score, table.concat(matched, ",")
+	return score, table.concat(matched, ","), strongHitCount, nauticalHitCount, phraseHit
 	end
 
 local function collectMatches(root, limit)
@@ -262,12 +333,15 @@ local function collectMatches(root, limit)
 	for index, descendant in ipairs(descendants) do
 		local className = safeClassName(descendant)
 		if includeClasses[className] then
-			local score, matched = scoreInstance(descendant)
+			local score, matched, strongHitCount, nauticalHitCount, phraseHit = scoreInstance(descendant)
 			if score > 0 then
 				table.insert(results, {
 					instance = descendant,
 					score = score,
 					matched = matched,
+					strongHitCount = strongHitCount,
+					nauticalHitCount = nauticalHitCount,
+					phraseHit = phraseHit,
 					className = className,
 					path = safePath(descendant),
 				})
@@ -293,7 +367,6 @@ local function detectPhantomEvent()
 	local allMatches = {}
 	local roots = {
 		{label = "workspace", root = workspace, limit = 16},
-		{label = "brainrots", root = workspace:FindFirstChild("ActiveBrainrots"), limit = 10},
 		{label = "boats", root = workspace:FindFirstChild("Boats") or workspace:FindFirstChild("Boat") or workspace:FindFirstChild("Ships"), limit = 10},
 		{label = "gui", root = LP:FindFirstChildOfClass("PlayerGui"), limit = 12},
 	}
@@ -315,18 +388,27 @@ local function detectPhantomEvent()
 
 	local topScore = allMatches[1] and allMatches[1].score or 0
 	local totalScore = 0
+	local strongTotal = 0
+	local nauticalTotal = 0
+	local phraseTotal = 0
 	for index = 1, math.min(5, #allMatches) do
 		totalScore = totalScore + allMatches[index].score
+		strongTotal = strongTotal + (allMatches[index].strongHitCount or 0)
+		nauticalTotal = nauticalTotal + (allMatches[index].nauticalHitCount or 0)
+		if allMatches[index].phraseHit then
+			phraseTotal = phraseTotal + 1
+		end
 	end
 
-	local detected = topScore >= MIN_DETECTION_SCORE or totalScore >= MIN_TOTAL_SCORE
-	return detected, allMatches, topScore, totalScore
+	local detected = phraseTotal > 0 or (strongTotal > 0 and nauticalTotal > 0 and (topScore >= MIN_DETECTION_SCORE or totalScore >= MIN_TOTAL_SCORE))
+	return detected, allMatches, topScore, totalScore, strongTotal, nauticalTotal, phraseTotal
 	end
 
 local function startHopperAsync()
 	if hopperRunning or stopRequested then
 		return
 	end
+	hopperRunning = true
 	task.spawn(function()
 		local ok, err = xpcall(runHopper, debug.traceback)
 		hopperRunning = false
@@ -455,11 +537,12 @@ local function buildUi()
 	end)
 
 	uiSkipButton.MouseButton1Click:Connect(function()
-		if hopperRunning then
-			stopRequested = false
-			manualSkipRequested = true
-			log("SKIP", "salto manual solicitado")
-		end
+		stopRequested = false
+		manualSkipRequested = true
+		log("SKIP", "salto manual solicitado")
+		task.spawn(function()
+			forceHopToNextServer("manual")
+		end)
 	end)
 
 	uiCopyButton.MouseButton1Click:Connect(function()
@@ -621,6 +704,40 @@ local function teleportToServer(server)
 	return true
 	end
 
+forceHopToNextServer = function(reason)
+	if teleportInProgress then
+		log("TELEPORT_BUSY", "ya hay un teleport en curso")
+		return false
+	end
+	teleportInProgress = true
+	manualSkipRequested = false
+
+	local servers = fetchServerCandidates()
+	if #servers == 0 then
+		log("SERVER_NONE", "sin servidores nuevos; limpio cache y reintento")
+		visitedServerIds = {}
+		visitedServerIds[CURRENT_JOB_ID] = true
+		TeleportService:SetTeleportSetting(VISITED_KEY, visitedServerIds)
+		servers = fetchServerCandidates()
+		if #servers == 0 then
+			teleportInProgress = false
+			log("STOP", "no pude obtener servidores para saltar")
+			return false
+		end
+	end
+
+	local ok, result = pcall(function()
+		return teleportToServer(servers[1])
+	end)
+	if not ok or not result then
+		teleportInProgress = false
+		log("TELEPORT_FAIL", string.format("reason=%s err=%s", tostring(reason or "auto"), tostring(result or ok)))
+		return false
+	end
+	log("TELEPORT_NEXT", "reason=" .. tostring(reason or "auto"))
+	return true
+	end
+
 local function formatTopMatches(matches)
 	if #matches == 0 then
 		return "sin coincidencias"
@@ -641,14 +758,22 @@ local function scanCurrentServer()
 			log("SCAN_STOP", "scan detenido por usuario")
 			return false
 		end
+		if teleportInProgress then
+			return false
+		end
 		if manualSkipRequested then
-			manualSkipRequested = false
-			log("SCAN_SKIP", "se omitio el servidor actual")
+			log("SCAN_SKIP", "saltando inmediatamente al siguiente servidor")
+			forceHopToNextServer("manual")
 			return false
 		end
 		attempt = attempt + 1
-		local detected, matches, topScore, totalScore = detectPhantomEvent()
-		log("SCAN", string.format("attempt=%d hits=%d top=%d total=%d", attempt, #matches, topScore, totalScore))
+		local detected, matches, topScore, totalScore, strongTotal, nauticalTotal, phraseTotal = detectPhantomEvent()
+		log("SCAN", string.format("attempt=%d hits=%d top=%d total=%d strong=%d nautical=%d phrase=%d", attempt, #matches, topScore, totalScore, strongTotal or 0, nauticalTotal or 0, phraseTotal or 0))
+		if manualSkipRequested then
+			log("SCAN_SKIP", "saltando inmediatamente al siguiente servidor")
+			forceHopToNextServer("manual")
+			return false
+		end
 		if detected then
 			local summary = formatTopMatches(matches)
 			log("PHANTOM_FOUND", summary)
@@ -670,29 +795,16 @@ runHopper = function()
 	end
 
 	hopperRunning = true
+	teleportInProgress = false
 	local found = scanCurrentServer()
 	if found then
 		hopperRunning = false
 		stopRequested = true
 		return
 	end
-
-	local servers = fetchServerCandidates()
-	if #servers == 0 then
-		clearArray(storedLogs)
-		log("SERVER_NONE", "sin servidores nuevos; limpio cache y reintento")
-		visitedServerIds = {}
-		visitedServerIds[CURRENT_JOB_ID] = true
-		TeleportService:SetTeleportSetting(VISITED_KEY, visitedServerIds)
-		servers = fetchServerCandidates()
-		if #servers == 0 then
-			hopperRunning = false
-			log("STOP", "no pude obtener servidores para saltar")
-			return
-		end
+	if not teleportInProgress then
+		forceHopToNextServer("auto")
 	end
-
-	teleportToServer(servers[1])
 	hopperRunning = false
 	end
 
