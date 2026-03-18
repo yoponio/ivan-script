@@ -62,6 +62,7 @@ local stPatricUnconfirmedDrainWindow = 1.4
 local stPatricRepromptDelay = 0.35
 local stPatricHoldSnapDistance = 3.5
 local stPatricImmediateRepromptDelay = 0.18
+local stPatricConfirmTimeout = 1.6
 
 local invCount = 0
 local basePos = nil
@@ -2405,6 +2406,33 @@ scoreYesButton = function(button)
 	return score
 end
 
+local function scoreFallbackYesButton(button)
+	if not button or not safeIsA(button, "GuiButton") then
+		return 0
+	end
+
+	local text = safeText(button)
+	local name = safeName(button)
+	local path = string.lower(safeInstancePath(button))
+	local score = 0
+
+	score = score + getGuiTextMatchScore(text)
+	score = score + math.max(0, getGuiTextMatchScore(name) - 2)
+	score = score + math.max(0, getGuiTextMatchScore(path) - 4)
+
+	if path:find("choicegui%.choice%.choices%.yes") then
+		score = score + 12
+	elseif path:find("choicegui") and path:find("yes") then
+		score = score + 8
+	end
+
+	if safeGuiArea(button) >= 1200 then
+		score = score + 1
+	end
+
+	return score
+end
+
 local function getRankedStPatricYesButtons(limit)
 	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
 	if not playerGui then
@@ -2439,6 +2467,38 @@ local function getRankedStPatricYesButtons(limit)
 	if limit and #ranked > limit then
 		for i = #ranked, limit + 1, -1 do
 			table.remove(ranked, i)
+		end
+	end
+
+	if #ranked == 0 then
+		for _, descendant in ipairs(playerGui:GetDescendants()) do
+			if safeIsA(descendant, "GuiButton") then
+				local score = scoreFallbackYesButton(descendant)
+				if score > 0 then
+					table.insert(ranked, {
+						button = descendant,
+						score = score,
+						area = safeGuiArea(descendant),
+						path = safeInstancePath(descendant),
+					})
+				end
+			end
+		end
+
+		table.sort(ranked, function(a, b)
+			if a.score ~= b.score then
+				return a.score > b.score
+			end
+			if a.area ~= b.area then
+				return a.area > b.area
+			end
+			return a.path < b.path
+		end)
+
+		if limit and #ranked > limit then
+			for i = #ranked, limit + 1, -1 do
+				table.remove(ranked, i)
+			end
 		end
 	end
 
@@ -2485,7 +2545,7 @@ local function activateStPatricYesButton(button)
 end
 
 local function confirmStPatricDialog(status)
-	local deadline = os.clock() + 3.5
+	local deadline = os.clock() + stPatricConfirmTimeout
 	local dialogSeen = false
 	while os.clock() < deadline do
 		if scriptClosed then
