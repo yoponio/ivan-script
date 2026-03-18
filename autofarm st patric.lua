@@ -3197,6 +3197,14 @@ mainLoopThread = task.spawn(function()
 				if currentHumanoid then
 					logHealthState("grab_fail", currentHumanoid)
 				end
+				local carryAfterFail = getEffectiveCarryCount()
+				if returnLocked or carryAfterFail >= returnAt then
+					returnLocked = true
+					grabAttempts = 0
+					debugLog("STP_TRIGGER", "limite detectado tras grab abort carry=" .. tostring(carryAfterFail) .. "/" .. tostring(returnAt))
+					submitStPatricLoad(status, runToken)
+					return
+				end
 				grabAttempts = grabAttempts + 1
 				debugLog("STP_GRAB_FAIL", "fail intento=" .. tostring(grabAttempts))
 				status.Text = "STP FAIL " .. tostring(grabAttempts) .. "/3"
