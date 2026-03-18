@@ -2,7 +2,7 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
-local scriptVersion = "stpatric-dedicated-r1"
+local scriptVersion = "stpatric-dedicated-r2"
 
 print("--- INICIANDO OSAKA " .. scriptVersion .. " (ST PATRIC DEDICADO) ---")
 
