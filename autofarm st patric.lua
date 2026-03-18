@@ -65,22 +65,6 @@ local stPatricImmediateRepromptDelay = 0.18
 local stPatricConfirmTimeout = 1.6
 local stPatricAssumeSubmitDelay = 0.45
 
-local function finalizeStPatricSubmitSuccess(status, runToken, carryCount, toolsBefore, toolsNow, dialogScore, dialogPath, eventName)
-	captureBaselineTools()
-	invCount = 0
-	grabAttempts = 0
-	currentTarget = nil
-	blacklist = {}
-	returnLocked = false
-	isReturning = false
-	refreshTargets(true)
-	status.Text = "STP: ENTREGA OK"
-	debugLog(eventName or "STP_SUBMIT_OK", "carry_before=" .. tostring(carryCount) .. " tools_before=" .. tostring(toolsBefore) .. " tools_now=" .. tostring(toolsNow) .. " dialog_score=" .. tostring(dialogScore) .. " dialog_path=" .. tostring(dialogPath or "none"))
-	descendAfterStPatricSubmit(runToken)
-	releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
-	return true
-end
-
 local invCount = 0
 local basePos = nil
 local travelBaseY = nil
@@ -1797,6 +1781,22 @@ local function descendAfterStPatricSubmit(runToken)
 	return true
 end
 
+local function finalizeStPatricSubmitSuccess(status, runToken, carryCount, toolsBefore, toolsNow, dialogScore, dialogPath, eventName)
+	captureBaselineTools()
+	invCount = 0
+	grabAttempts = 0
+	currentTarget = nil
+	blacklist = {}
+	returnLocked = false
+	isReturning = false
+	refreshTargets(true)
+	status.Text = "STP: ENTREGA OK"
+	debugLog(eventName or "STP_SUBMIT_OK", "carry_before=" .. tostring(carryCount) .. " tools_before=" .. tostring(toolsBefore) .. " tools_now=" .. tostring(toolsNow) .. " dialog_score=" .. tostring(dialogScore) .. " dialog_path=" .. tostring(dialogPath or "none"))
+	descendAfterStPatricSubmit(runToken)
+	releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
+	return true
+end
+
 local function getReturnTunnelY()
 	if not basePos then
 		return nil
@@ -2570,9 +2570,6 @@ local function confirmStPatricDialog(status)
 		end
 
 		local rankedButtons = getRankedStPatricYesButtons(3)
-		if #rankedButtons > 0 then
-			dialogSeen = true
-		end
 		local dialogVisible = getVisibleStPatricDialog()
 		dialogSeen = dialogSeen or dialogVisible
 		for _, entry in ipairs(rankedButtons) do
@@ -3251,6 +3248,7 @@ charAddedConn = LP.CharacterAdded:Connect(function()
 		local root = getRoot()
 		if root then
 			invalidateRunToken("characterAdded")
+			resetRunState()
 			if not basePos then
 				basePos = root.Position
 			end
