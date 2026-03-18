@@ -74,6 +74,7 @@ local registerOrbModel
 local unregisterOrbModel
 local isOrbModel
 local isOrbCandidate
+local isBlacklisted
 local scanWorkspaceForNearestOrb
 
 local function updateCopyLogsButton()
@@ -459,7 +460,7 @@ local function ensureOrbWatchers()
 	end)
 end
 
-local function isBlacklisted(path)
+isBlacklisted = function(path)
 	local expiresAt = orbBlacklist[path]
 	if not expiresAt then
 		return false
@@ -807,6 +808,16 @@ local function mainLoop()
 	setStatus("Listo para farmear Phantom")
 end
 
+local function runMainLoopSafely()
+	local ok, err = xpcall(mainLoop, debug.traceback)
+	if not ok then
+		debugLog("LOOP_CRASH", tostring(err))
+		stopTween()
+		stopMovementAssist()
+		loopThread = nil
+	end
+end
+
 local function setAutoFarm(state)
 	autoFarm = state
 	if toggleButton then
@@ -819,7 +830,8 @@ local function setAutoFarm(state)
 		ensureOrbWatchers()
 		startMovementAssist()
 		if not loopThread then
-			loopThread = taskSpawn(mainLoop)
+			loopThread = true
+			taskSpawn(runMainLoopSafely)
 		end
 		debugLog("RUN", "autofarm phantom activado")
 	else
