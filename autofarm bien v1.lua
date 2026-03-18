@@ -109,6 +109,8 @@ local steppedConn = nil
 local healthChangedConn = nil
 local stateChangedConn = nil
 local seatedConn = nil
+local inputBeganConn = nil
+local inputEndedConn = nil
 local mainLoopThread = nil
 local mainButton = nil
 local towerButton = nil
@@ -121,6 +123,7 @@ local characterPartStateBackup = {}
 local collisionModeLabel = "NORMAL"
 local baselineToolCounts = {}
 local farmToolTrackingReliable = false
+local activeManualKeys = {}
 local getCharacter
 local getHumanoid
 local getRoot
@@ -700,6 +703,12 @@ local function updateManualMoveButtonState()
 	manualMoveButton.TextColor3 = Color3.new(1, 1, 1)
 end
 
+local function clearManualInputState()
+	for keyCode in pairs(activeManualKeys) do
+		activeManualKeys[keyCode] = nil
+	end
+end
+
 local function updateQuietLogsButtonState()
 	if scriptClosed or not quietLogsButton then
 		return
@@ -875,22 +884,22 @@ local function getManualMoveVector()
 	end
 
 	local moveVector = Vector3.zero
-	if UIS:IsKeyDown(Enum.KeyCode.W) then
+	if activeManualKeys[Enum.KeyCode.W] or activeManualKeys[Enum.KeyCode.Up] then
 		moveVector = moveVector + flatForward
 	end
-	if UIS:IsKeyDown(Enum.KeyCode.S) then
+	if activeManualKeys[Enum.KeyCode.S] or activeManualKeys[Enum.KeyCode.Down] then
 		moveVector = moveVector - flatForward
 	end
-	if UIS:IsKeyDown(Enum.KeyCode.D) then
+	if activeManualKeys[Enum.KeyCode.D] or activeManualKeys[Enum.KeyCode.Right] then
 		moveVector = moveVector + flatRight
 	end
-	if UIS:IsKeyDown(Enum.KeyCode.A) then
+	if activeManualKeys[Enum.KeyCode.A] or activeManualKeys[Enum.KeyCode.Left] then
 		moveVector = moveVector - flatRight
 	end
-	if UIS:IsKeyDown(Enum.KeyCode.Space) then
+	if activeManualKeys[Enum.KeyCode.Space] or activeManualKeys[Enum.KeyCode.E] then
 		moveVector = moveVector + Vector3.new(0, 1, 0)
 	end
-	if UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.C) then
+	if activeManualKeys[Enum.KeyCode.LeftControl] or activeManualKeys[Enum.KeyCode.C] or activeManualKeys[Enum.KeyCode.Q] then
 		moveVector = moveVector - Vector3.new(0, 1, 0)
 	end
 
@@ -1266,6 +1275,27 @@ local function releaseAutopilot(reason, status)
 		updateButtonState(mainButton)
 	end
 end
+
+if inputBeganConn then
+	inputBeganConn:Disconnect()
+	inputBeganConn = nil
+end
+
+if inputEndedConn then
+	inputEndedConn:Disconnect()
+	inputEndedConn = nil
+end
+
+inputBeganConn = UIS.InputBegan:Connect(function(input, gameProcessed)
+	if scriptClosed or gameProcessed then
+		return
+	end
+	activeManualKeys[input.KeyCode] = true
+end)
+
+inputEndedConn = UIS.InputEnded:Connect(function(input)
+	activeManualKeys[input.KeyCode] = nil
+end)
 
 local function refreshTargets(force)
 	local now = os.clock()
@@ -2326,6 +2356,7 @@ local function shutdownScript()
 	returnLocked = false
 	godMode = false
 	manualMoveMode = false
+	clearManualInputState()
 	forceRescan = false
 	currentTarget = nil
 	blacklist = {}
@@ -2363,6 +2394,8 @@ local function shutdownScript()
 	healthChangedConn = disconnectConnection(healthChangedConn)
 	stateChangedConn = disconnectConnection(stateChangedConn)
 	seatedConn = disconnectConnection(seatedConn)
+	inputBeganConn = disconnectConnection(inputBeganConn)
+	inputEndedConn = disconnectConnection(inputEndedConn)
 
 	if mainLoopThread then
 		pcall(function()
@@ -2507,6 +2540,7 @@ moveBtn.MouseButton1Click:Connect(function()
 	manualMoveMode = not manualMoveMode
 	if manualMoveMode then
 		godMode = true
+		clearManualInputState()
 		local root = getRoot()
 		local humanoid = getHumanoid()
 		if root then
@@ -2748,6 +2782,9 @@ local function bindCharacter(btnRef, statusRef)
 				return
 			end
 			isRespawning = true
+			manualMoveMode = false
+			clearManualInputState()
+			updateManualMoveButtonState()
 			debugLog("DEATH", "personaje murio, watchMode=" .. tostring(watchMode))
 			stopFarm("RESPAWN DETECTADO - REARMANDO...", btnRef, statusRef, true)
 		end)
@@ -2771,6 +2808,15 @@ charAddedConn = LP.CharacterAdded:Connect(function()
 		return
 	end
 	bindCharacter(btn, status)
+	if not watchMode then
+		manualMoveMode = false
+		clearManualInputState()
+		updateManualMoveButtonState()
+		local newHumanoid = getHumanoid()
+		if newHumanoid then
+			releaseTravelGodState(newHumanoid)
+		end
+	end
 	if watchMode then
 		local root = getRoot()
 		if root then
