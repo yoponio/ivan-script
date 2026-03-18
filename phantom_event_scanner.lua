@@ -525,7 +525,7 @@ screenGui.Parent = guiParent
 
 local frame = Instance.new("Frame")
 frame.Parent = screenGui
-frame.Size = UDim2.new(0, 430, 0, 250)
+frame.Size = UDim2.new(0, 360, 0, 185)
 frame.Position = UDim2.new(0.05, 0, 0.18, 0)
 frame.BackgroundColor3 = Color3.fromRGB(18, 20, 24)
 frame.Active = true
@@ -538,7 +538,7 @@ title.Parent = frame
 title.Size = UDim2.new(1, -90, 0, 28)
 title.Position = UDim2.new(0, 10, 0, 8)
 title.BackgroundTransparency = 1
-title.Text = "PHANTOM AUTOFARM " .. scriptVersion
+title.Text = "PHANTOM AUTO " .. scriptVersion
 title.TextColor3 = Color3.new(1, 1, 1)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 14
@@ -561,7 +561,7 @@ statusLabel.Parent = frame
 statusLabel.Size = UDim2.new(1, -20, 0, 18)
 statusLabel.Position = UDim2.new(0, 10, 0, 42)
 statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "Listo para farmear Phantom"
+statusLabel.Text = "Autofarm Phantom listo"
 statusLabel.TextColor3 = Color3.fromRGB(215, 220, 225)
 statusLabel.Font = Enum.Font.Gotham
 statusLabel.TextSize = 12
@@ -582,17 +582,15 @@ local function makeButton(text, x, y, width)
 	return button
 end
 
-toggleButton = makeButton("AUTO PHANTOM: OFF", 10, 70, 170)
+toggleButton = makeButton("AUTO PHANTOM: ON", 10, 70, 170)
 copyLogsButton = makeButton("COPIAR LOGS (0)", 186, 70, 140)
-local depositButton = makeButton("IR A GHOST CANNON", 10, 104, 170)
-local orbButton = makeButton("IR AL ORBE", 186, 104, 140)
 
 infoLabel = Instance.new("TextLabel")
 infoLabel.Parent = frame
 infoLabel.Size = UDim2.new(1, -20, 0, 42)
-infoLabel.Position = UDim2.new(0, 10, 0, 140)
+infoLabel.Position = UDim2.new(0, 10, 0, 108)
 infoLabel.BackgroundTransparency = 1
-infoLabel.Text = "Modo rapido: junta PhantomOrbs hasta 100 y solo entonces va a Ghost Cannon para usar Deposit Orbs. No se distrae con shards."
+infoLabel.Text = "Modo competitivo: junta PhantomOrbs hasta 100 y deposita en Ghost Cannon. Este archivo no es el scanner."
 infoLabel.TextWrapped = true
 infoLabel.TextColor3 = Color3.fromRGB(185, 190, 198)
 infoLabel.Font = Enum.Font.Gotham
@@ -605,20 +603,6 @@ toggleButton.MouseButton1Click:Connect(function()
 end)
 
 copyLogsButton.MouseButton1Click:Connect(copyLogsToClipboard)
-
-depositButton.MouseButton1Click:Connect(function()
-	depositOrbs()
-end)
-
-orbButton.MouseButton1Click:Connect(function()
-	local orbModel, orbPart = getNearestOrb()
-	if orbModel and orbPart then
-		debugLog("ORB_MANUAL", safePath(orbModel))
-		moveTo(CFrame.new(orbPart.Position + Vector3.new(0, 2.0, 0)), flySpeed)
-	else
-		debugLog("ORB_MANUAL_FAIL", "sin orbe")
-	end
-end)
 
 closeButton.MouseButton1Click:Connect(function()
 	scriptClosed = true
@@ -637,3 +621,4 @@ end)
 
 updateCopyLogsButton()
 debugLog("BOOT", "Ghost Cannon=" .. safePath(getDepositPrompt()))
+setAutoFarm(true)
