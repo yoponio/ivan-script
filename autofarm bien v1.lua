@@ -1925,7 +1925,7 @@ local function grabItem(target, runToken)
 	elseif clickDetector then
 		debugLog(
 			"GRAB_CLICK",
-			string.format("path=%s max=%.1f", clickDetector:GetFullName(), clickDetector.MaxActivationDistance),
+			string.format("path=%s max=%.1f", clickDetector:GetFullName(), clickDetector.MaxActivationDistance)
 		)
 	end
 
