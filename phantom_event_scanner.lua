@@ -25,39 +25,28 @@ local movementConn = nil
 local loopThread = nil
 local watchPromptConn = nil
 local characterAddedConn = nil
-local orbAddedConn = nil
-local orbRemovingConn = nil
 local basePos = nil
 local depositPendingReset = false
 local lastDepositCount = 0
-local depositPendingSince = 0
 local orbBlacklist = {}
-local orbRegistry = {}
-local lastOrbWaitLogAt = 0
 
 local instantMove = true
 local flySpeed = 420
 local safeDepth = -60
-local settleTime = 0.01
-local orbTouchTime = 0.02
+local settleTime = 0.03
+local orbTouchTime = 0.05
 local depositDistance = 6
-local promptRetryDelay = 0.05
-local orbRefreshDelay = 0.01
+local promptRetryDelay = 0.08
+local orbRefreshDelay = 0.02
 local depositTargetCount = 100
-local postTouchCountPolls = 6
-local postTouchCountPollDelay = 0.02
+local postTouchCountPolls = 10
+local postTouchCountPollDelay = 0.03
 local orbApproachHeight = -24
 local depositApproachHeight = 3.0
 local depositRetreatOffset = -30
-local depositDirectOffset = -8
-local depositPromptAttempts = 3
-local depositSuccessPolls = 6
-local depositSuccessPollDelay = 0.05
 local orbRetreatOffset = -18
-local remoteTouchAttempts = 2
+local remoteTouchAttempts = 3
 local orbBlacklistSeconds = 8
-local depositResetTimeout = 2.5
-local orbWaitLogInterval = 0.4
 local maxStoredLogs = 250
 
 local storedLogs = {}
@@ -70,12 +59,6 @@ local getCharacter
 local getHumanoid
 local getRoot
 local getDepositPrompt
-local registerOrbModel
-local unregisterOrbModel
-local isOrbModel
-local isOrbCandidate
-local isBlacklisted
-local scanWorkspaceForNearestOrb
 
 local function updateCopyLogsButton()
 	if copyLogsButton then
@@ -373,94 +356,7 @@ local function resolveOrbPart(model)
 	return nil
 end
 
-scanWorkspaceForNearestOrb = function(root)
-	local bestModel = nil
-	local bestPart = nil
-	local bestDistance = math.huge
-	for _, descendant in ipairs(workspace:GetDescendants()) do
-		if isOrbCandidate(descendant) then
-			local path = safePath(descendant)
-			if not isBlacklisted(path) then
-				local part = resolveOrbPart(descendant)
-				if part then
-					local distance = (root.Position - part.Position).Magnitude
-					if distance < bestDistance then
-						bestDistance = distance
-						bestModel = descendant
-						bestPart = part
-					end
-				end
-			end
-		end
-	end
-	if bestModel then
-		registerOrbModel(bestModel)
-	end
-	return bestModel, bestPart, bestDistance
-end
-
-isOrbCandidate = function(instance)
-	if not instance then
-		return false
-	end
-	if safeIsA(instance, "Model") or safeIsA(instance, "Folder") or safeIsA(instance, "BasePart") then
-		return isOrbModel(instance)
-	end
-	return false
-end
-
-registerOrbModel = function(model)
-	if not isOrbCandidate(model) then
-		return
-	end
-	orbRegistry[safePath(model)] = model
-end
-
-unregisterOrbModel = function(model)
-	if not model then
-		return
-	end
-	orbRegistry[safePath(model)] = nil
-end
-
-local function rebuildOrbRegistry()
-	for path in pairs(orbRegistry) do
-		orbRegistry[path] = nil
-	end
-	local sources = {
-		workspace:FindFirstChild("PhantomEventParts"),
-		workspace:FindFirstChild("PhantomOrbParts"),
-		workspace,
-	}
-	for _, source in ipairs(sources) do
-		if source then
-			for _, descendant in ipairs(source:GetDescendants()) do
-				if isOrbCandidate(descendant) then
-					registerOrbModel(descendant)
-				end
-			end
-		end
-	end
-end
-
-local function ensureOrbWatchers()
-	if orbAddedConn and orbRemovingConn then
-		return
-	end
-	rebuildOrbRegistry()
-	orbAddedConn = workspace.DescendantAdded:Connect(function(descendant)
-		if isOrbCandidate(descendant) then
-			registerOrbModel(descendant)
-		end
-	end)
-	orbRemovingConn = workspace.DescendantRemoving:Connect(function(descendant)
-		if isOrbCandidate(descendant) then
-			unregisterOrbModel(descendant)
-		end
-	end)
-end
-
-isBlacklisted = function(path)
+local function isBlacklisted(path)
 	local expiresAt = orbBlacklist[path]
 	if not expiresAt then
 		return false
@@ -478,18 +374,10 @@ local function blacklistOrb(instance, reason)
 	debugLog("ORB_BLACKLIST", string.format("path=%s reason=%s", path, tostring(reason or "n/a")))
 end
 
-isOrbModel = function(instance)
+local function isOrbModel(instance)
 	local path = safePath(instance)
 	local name = safeName(instance)
-	local lowerPath = string.lower(path)
-	local lowerName = string.lower(name)
-	if lowerPath:find("phantomorbparts", 1, true) then
-		return true
-	end
-	if lowerPath:find("phantomorb", 1, true) then
-		return true
-	end
-	if lowerPath:find("phantomeventparts", 1, true) and (lowerName:find("phantomorb", 1, true) or lowerName == "hitbox") then
+	if path:find("PhantomOrbParts", 1, true) then
 		return true
 	end
 	if name:match("^PhantomOrb%d+$") then
@@ -506,59 +394,19 @@ local function getNearestOrb()
 	local bestModel = nil
 	local bestPart = nil
 	local bestDistance = math.huge
-	local registryCount = 0
-	local availableCount = 0
-	for path, model in pairs(orbRegistry) do
-		registryCount = registryCount + 1
-		if typeof(model) ~= "Instance" or model.Parent == nil then
-			orbRegistry[path] = nil
-		elseif not isBlacklisted(path) then
-			availableCount = availableCount + 1
-			local part = resolveOrbPart(model)
-			if part then
-				local distance = (root.Position - part.Position).Magnitude
-				if distance < bestDistance then
-					bestDistance = distance
-					bestModel = model
-					bestPart = part
-				end
-			else
-				orbRegistry[path] = nil
-			end
-		end
-	end
-	if not bestModel then
-		if availableCount == 0 and registryCount > 0 then
-			for path in pairs(orbBlacklist) do
-				orbBlacklist[path] = nil
-			end
-		end
-		rebuildOrbRegistry()
-		registryCount = 0
-		for path, model in pairs(orbRegistry) do
-			registryCount = registryCount + 1
-			if typeof(model) ~= "Instance" or model.Parent == nil then
-				orbRegistry[path] = nil
-			elseif not isBlacklisted(path) then
-				local part = resolveOrbPart(model)
+	for _, descendant in ipairs(workspace:GetDescendants()) do
+		if safeIsA(descendant, "Model") and isOrbModel(descendant) then
+			local path = safePath(descendant)
+			if not isBlacklisted(path) then
+				local part = resolveOrbPart(descendant)
 				if part then
 					local distance = (root.Position - part.Position).Magnitude
 					if distance < bestDistance then
 						bestDistance = distance
-						bestModel = model
+						bestModel = descendant
 						bestPart = part
 					end
-				else
-					orbRegistry[path] = nil
 				end
-			end
-		end
-		if not bestModel then
-			bestModel, bestPart, bestDistance = scanWorkspaceForNearestOrb(root)
-			if bestModel then
-				debugLog("ORB_SCAN_RECOVER", string.format("path=%s dist=%.1f", safePath(bestModel), bestDistance))
-			else
-				debugLog("ORB_REGISTRY", string.format("registry=%d blacklisted=%d", registryCount, next(orbBlacklist) and 1 or 0))
 			end
 		end
 	end
@@ -605,15 +453,7 @@ local function isDepositResetComplete()
 	if heldCount == 0 or heldCount < lastDepositCount then
 		depositPendingReset = false
 		lastDepositCount = 0
-		depositPendingSince = 0
 		debugLog("DEPOSIT_RESET", "contador actualizado")
-		return true
-	end
-	if depositPendingSince > 0 and (os.clock() - depositPendingSince) >= depositResetTimeout then
-		depositPendingReset = false
-		lastDepositCount = heldCount
-		depositPendingSince = 0
-		debugLog("DEPOSIT_TIMEOUT", string.format("held=%d sin refresh del prompt", heldCount))
 		return true
 	end
 	return false
@@ -654,23 +494,6 @@ local function firePrompt(prompt)
 		prompt:InputHoldEnd()
 	end)
 	return ok
-end
-
-local function waitForDepositSuccess(previousCount)
-	local lowestCount = previousCount or math.huge
-	local latestPrompt = nil
-	for _ = 1, depositSuccessPolls do
-		local heldCount, prompt = getHeldOrbCount()
-		latestPrompt = prompt or latestPrompt
-		if heldCount < lowestCount then
-			lowestCount = heldCount
-		end
-		if heldCount == 0 or heldCount < (previousCount or math.huge) then
-			return true, heldCount, latestPrompt
-		end
-		taskWait(depositSuccessPollDelay)
-	end
-	return false, lowestCount, latestPrompt
 end
 
 local function tryTouch(part)
@@ -726,29 +549,23 @@ local function depositOrbs()
 		debugLog("DEPOSIT_SKIP", string.format("held=%d target=%d", heldCount, depositTargetCount))
 		return false
 	end
-	local promptPosition = getModelPosition(prompt) or getModelPosition(prompt.Parent)
-	for attempt = 1, depositPromptAttempts do
-		local ok = firePrompt(prompt)
-		if ok then
-			local success, newCount = waitForDepositSuccess(heldCount)
-			if success then
-				depositPendingReset = true
-				lastDepositCount = heldCount
-				depositPendingSince = os.clock()
-				debugLog("DEPOSIT", string.format("held=%d path=%s action=%s try=%d newHeld=%d", heldCount, safePath(prompt), safeText(prompt, "ActionText"), attempt, newCount))
-				if promptPosition then
-					retreatUnderPosition(promptPosition, depositRetreatOffset)
-				end
-				return true
-			end
-		end
-
-		if promptPosition then
-			snapTo(CFrame.new(promptPosition + Vector3.new(0, depositDirectOffset, 0)))
-			taskWait(settleTime)
-		end
+	local standCFrame = getPromptStandCFrame(prompt)
+	if standCFrame and not moveTo(standCFrame, flySpeed) then
+		return false
 	end
-	debugLog("DEPOSIT_FAIL", string.format("no se pudo activar prompt held=%d", heldCount))
+	taskWait(settleTime)
+	local ok = firePrompt(prompt)
+	if ok then
+		depositPendingReset = true
+		lastDepositCount = heldCount
+		debugLog("DEPOSIT", string.format("held=%d path=%s action=%s", heldCount, safePath(prompt), safeText(prompt, "ActionText")))
+		local promptPosition = getModelPosition(prompt) or getModelPosition(prompt.Parent)
+		if promptPosition then
+			retreatUnderPosition(promptPosition, depositRetreatOffset)
+		end
+		return true
+	end
+	debugLog("DEPOSIT_FAIL", "no se pudo activar prompt")
 	return false
 end
 
@@ -767,14 +584,16 @@ local function collectOrbCycle()
 	end
 	local orbModel, orbPart, distance = getNearestOrb()
 	if not orbModel or not orbPart then
-		if (os.clock() - lastOrbWaitLogAt) >= orbWaitLogInterval then
-			lastOrbWaitLogAt = os.clock()
-			debugLog("ORB_WAIT", string.format("sin orbes phantom held=%d/%d", heldCount, depositTargetCount))
-		end
+		debugLog("ORB_WAIT", string.format("sin orbes phantom held=%d/%d", heldCount, depositTargetCount))
 		taskWait(orbRefreshDelay)
 		return
 	end
 	debugLog("ORB_TARGET", string.format("held=%d/%d dist=%.1f path=%s", heldCount, depositTargetCount, distance, safePath(orbModel)))
+	local approach = CFrame.new(orbPart.Position.X, resolveTravelY(orbPart.Position), orbPart.Position.Z)
+	if not moveTo(approach, flySpeed) then
+		return
+	end
+	taskWait(settleTime)
 	tryTouch(orbPart)
 	debugLog("ORB_TOUCH", safePath(orbPart))
 	taskWait(orbTouchTime)
@@ -813,16 +632,6 @@ local function mainLoop()
 	setStatus("Listo para farmear Phantom")
 end
 
-local function runMainLoopSafely()
-	local ok, err = xpcall(mainLoop, debug.traceback)
-	if not ok then
-		debugLog("LOOP_CRASH", tostring(err))
-		stopTween()
-		stopMovementAssist()
-		loopThread = nil
-	end
-end
-
 local function setAutoFarm(state)
 	autoFarm = state
 	if toggleButton then
@@ -832,11 +641,9 @@ local function setAutoFarm(state)
 	if autoFarm then
 		basePos = resolveBasePosition() or basePos
 		setStatus("Juntando orbes hasta 100 para depositar en Ghost Cannon")
-		ensureOrbWatchers()
 		startMovementAssist()
 		if not loopThread then
-			loopThread = true
-			taskSpawn(runMainLoopSafely)
+			loopThread = task.spawn(mainLoop)
 		end
 		debugLog("RUN", "autofarm phantom activado")
 	else
@@ -973,19 +780,10 @@ closeButton.MouseButton1Click:Connect(function()
 		watchPromptConn:Disconnect()
 		watchPromptConn = nil
 	end
-	if orbAddedConn then
-		orbAddedConn:Disconnect()
-		orbAddedConn = nil
-	end
-	if orbRemovingConn then
-		orbRemovingConn:Disconnect()
-		orbRemovingConn = nil
-	end
 	screenGui:Destroy()
 end)
 
 updateCopyLogsButton()
 debugLog("BOOT", "Ghost Cannon=" .. safePath(getDepositPrompt()))
 basePos = resolveBasePosition() or basePos
-ensureOrbWatchers()
 setAutoFarm(true)
