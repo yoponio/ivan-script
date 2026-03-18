@@ -70,6 +70,7 @@ local getRoot
 local getDepositPrompt
 local registerOrbModel
 local unregisterOrbModel
+local isOrbModel
 
 local function updateCopyLogsButton()
 	if copyLogsButton then
@@ -436,10 +437,13 @@ local function blacklistOrb(instance, reason)
 	debugLog("ORB_BLACKLIST", string.format("path=%s reason=%s", path, tostring(reason or "n/a")))
 end
 
-local function isOrbModel(instance)
+isOrbModel = function(instance)
 	local path = safePath(instance)
 	local name = safeName(instance)
 	if path:find("PhantomOrbParts", 1, true) then
+		return true
+	end
+	if path:find("PhantomEventParts", 1, true) and name:find("PhantomOrb", 1, true) then
 		return true
 	end
 	if name:match("^PhantomOrb%d+$") then
@@ -470,6 +474,26 @@ local function getNearestOrb()
 				end
 			else
 				orbRegistry[path] = nil
+			end
+		end
+	end
+	if not bestModel then
+		rebuildOrbRegistry()
+		for path, model in pairs(orbRegistry) do
+			if typeof(model) ~= "Instance" or model.Parent == nil then
+				orbRegistry[path] = nil
+			elseif not isBlacklisted(path) then
+				local part = resolveOrbPart(model)
+				if part then
+					local distance = (root.Position - part.Position).Magnitude
+					if distance < bestDistance then
+						bestDistance = distance
+						bestModel = model
+						bestPart = part
+					end
+				else
+					orbRegistry[path] = nil
+				end
 			end
 		end
 	end
