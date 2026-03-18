@@ -32,16 +32,18 @@ if not LP then
 	return
 end
 
-local scannerVersion = "escaner-r1"
-local maxStoredLogs = 2500
+local scannerVersion = "escaner-r2-lite"
+local maxStoredLogs = 1200
+local maxVisibleLogs = 180
 local clipboardChunkSize = 90000
 local storedLogs = {}
+local storedCharCount = 0
 local observerEnabled = true
 local observerClosed = false
 local captureMode = "ALL"
 local pollInterval = 0.35
-local guiPollInterval = 0.55
-local nearbyScanInterval = 1.25
+local guiPollInterval = 1.10
+local nearbyScanInterval = 3.50
 local moveThreshold = 6
 local logBox
 local statusLabel
@@ -74,6 +76,8 @@ local lastInventorySnapshot = ""
 local lastSharedSnapshot = ""
 local lastActivePromptState = {}
 local exportChunkIndex = 1
+local uiRefreshQueued = false
+local nearbyPromptScanEnabled = false
 
 local sharedEnv = nil
 pcall(function()
@@ -141,6 +145,16 @@ local captureModeAllow = {
 		ERROR = true,
 	},
 }
+
+local function clamp(value, minValue, maxValue)
+	if value < minValue then
+		return minValue
+	end
+	if value > maxValue then
+		return maxValue
+	end
+	return value
+end
 
 local function safeIsA(instance, className)
 	local ok, result = pcall(function()
@@ -353,9 +367,10 @@ local function refreshUi()
 	if observerClosed then
 		return
 	end
-	local payloadLength = #table.concat(storedLogs, "\n")
+	uiRefreshQueued = false
+	local payloadLength = storedCharCount
 	local chunkCount = math.max(1, math.ceil(payloadLength / clipboardChunkSize))
-	exportChunkIndex = math.clamp(exportChunkIndex, 1, chunkCount)
+	exportChunkIndex = clamp(exportChunkIndex, 1, chunkCount)
 	if countLabel then
 		countLabel.Text = "LOGS: " .. tostring(#storedLogs)
 	end
@@ -379,7 +394,12 @@ local function refreshUi()
 		filterButton.Text = "FILTRO: " .. getCaptureModeLabel()
 	end
 	if logBox then
-		local dump = table.concat(storedLogs, "\n")
+		local startIndex = math.max(1, #storedLogs - maxVisibleLogs + 1)
+		local visibleLogs = {}
+		for index = startIndex, #storedLogs do
+			table.insert(visibleLogs, storedLogs[index])
+		end
+		local dump = table.concat(visibleLogs, "\n")
 		logBox.Text = dump
 		pcall(function()
 			logBox.CursorPosition = #dump + 1
@@ -393,6 +413,23 @@ local function refreshUi()
 	if statusLabel and #storedLogs > 0 then
 		statusLabel.Text = storedLogs[#storedLogs]
 	end
+end
+
+local function scheduleUiRefresh()
+	if uiRefreshQueued or observerClosed then
+		return
+	end
+	uiRefreshQueued = true
+	task.delay(0.12, function()
+		if observerClosed then
+			return
+		end
+		local ok, err = xpcall(refreshUi, debug.traceback)
+		if not ok then
+			warn("[ESCANER][UI_REFRESH_ERR] " .. tostring(err))
+			uiRefreshQueued = false
+		end
+	end)
 end
 
 local function getStoredLogDump()
@@ -409,7 +446,7 @@ local function getRecentLogDump(limit)
 end
 
 local function getClipboardChunkCount()
-	local payloadLength = #getStoredLogDump()
+	local payloadLength = storedCharCount
 	return math.max(1, math.ceil(payloadLength / clipboardChunkSize))
 end
 
@@ -419,7 +456,7 @@ local function getClipboardChunk(index)
 		return "", 1, 1
 	end
 	local chunkCount = getClipboardChunkCount()
-	local safeIndex = math.clamp(index or 1, 1, chunkCount)
+	local safeIndex = clamp(index or 1, 1, chunkCount)
 	local startPos = ((safeIndex - 1) * clipboardChunkSize) + 1
 	local endPos = math.min(startPos + clipboardChunkSize - 1, #payload)
 	local header = string.format("[ESCANER_EXPORT part=%d/%d chars=%d-%d]\n", safeIndex, chunkCount, startPos, endPos)
@@ -428,9 +465,13 @@ end
 
 local function appendStoredLog(message)
 	table.insert(storedLogs, message)
-	trimArray(storedLogs, maxStoredLogs)
+	storedCharCount = storedCharCount + #message + 1
+	while #storedLogs > maxStoredLogs do
+		local removed = table.remove(storedLogs, 1)
+		storedCharCount = math.max(0, storedCharCount - (#removed + 1))
+	end
 	print(message)
-	refreshUi()
+	scheduleUiRefresh()
 end
 
 local function log(category, action, entity, details)
@@ -552,7 +593,7 @@ local function pollSharedState()
 		lastSharedSnapshot = snapshot
 		log("STATE", "SHARED", "TowerTsunamiState", snapshot)
 	end
-	refreshUi()
+	scheduleUiRefresh()
 end
 
 local function buildPromptDetails(prompt)
@@ -576,10 +617,6 @@ local function shouldLogPrompt(prompt)
 	local combined = lowerText(prompt)
 	local matched = containsInterestingKeyword(combined)
 	if matched then
-		return true
-	end
-	local distance = getDistanceToPlayer(prompt)
-	if distance and distance <= 30 then
 		return true
 	end
 	return false
@@ -1060,7 +1097,7 @@ local function createUi()
 	watchButton.MouseButton1Click:Connect(function()
 		observerEnabled = not observerEnabled
 		log("FLOW", observerEnabled and "WATCH_ON" or "WATCH_OFF", "observer", "manual toggle")
-		refreshUi()
+		scheduleUiRefresh()
 	end)
 
 	copyButton.MouseButton1Click:Connect(function()
@@ -1081,7 +1118,7 @@ local function createUi()
 		if copyPayloadToClipboard(payload) then
 			log("FLOW", "COPY_PART", "logs", "parte=" .. tostring(chunkIndex) .. "/" .. tostring(chunkCount))
 			exportChunkIndex = chunkIndex >= chunkCount and 1 or (chunkIndex + 1)
-			refreshUi()
+			scheduleUiRefresh()
 		else
 			log("ERROR", "COPY_PART_FAIL", "logs", "sin API clipboard")
 		end
@@ -1102,17 +1139,19 @@ local function createUi()
 
 	filterButton.MouseButton1Click:Connect(function()
 		cycleCaptureMode()
-		refreshUi()
+		nearbyPromptScanEnabled = captureMode == "ALL"
+		scheduleUiRefresh()
 		log("FLOW", "FILTER", "observer", "mode=" .. captureMode)
 	end)
 
 	clearButton.MouseButton1Click:Connect(function()
+		storedCharCount = 0
 		storedLogs = {}
 		lastGuiSnapshot = ""
 		lastNearbyPromptSnapshot = ""
 		lastInventorySnapshot = ""
 		exportChunkIndex = 1
-		refreshUi()
+		scheduleUiRefresh()
 		log("FLOW", "CLEAR", "logs", "buffer reiniciado")
 	end)
 
@@ -1153,6 +1192,7 @@ local function createUi()
 		sg:Destroy()
 	end)
 
+	nearbyPromptScanEnabled = captureMode == "ALL"
 	refreshUi()
 	return sg
 	end
@@ -1193,7 +1233,9 @@ mainLoopThread = task.spawn(function()
 			end
 			if now - lastNearbyScanAt >= nearbyScanInterval then
 				lastNearbyScanAt = now
-				pollNearbyPrompts()
+				if nearbyPromptScanEnabled then
+					pollNearbyPrompts()
+				end
 			end
 		end
 	end
