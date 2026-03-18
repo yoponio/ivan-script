@@ -1,14 +1,28 @@
 local scriptVersion = "tower-tsunami-dedicated-r1"
 
-local gameRef = game
-local getService = gameRef and gameRef.GetService
-if type(getService) ~= "function" then
-	return
+local function safeGetService(serviceName)
+	local service = nil
+	pcall(function()
+		local getter = game and game.GetService
+		if type(getter) == "function" then
+			service = getter(game, serviceName)
+		end
+	end)
+	if service then
+		return service
+	end
+	pcall(function()
+		service = game[serviceName]
+	end)
+	return service
 end
 
-local Players = getService(gameRef, "Players")
-local TS = getService(gameRef, "TweenService")
-local RS = getService(gameRef, "RunService")
+local Players = safeGetService("Players")
+local TS = safeGetService("TweenService")
+local RS = safeGetService("RunService")
+if not Players or not TS or not RS then
+	return
+end
 
 local LP = Players.LocalPlayer
 
