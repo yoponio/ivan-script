@@ -2476,6 +2476,20 @@ local function triggerStPatricChestPrompt(status, runToken)
 	return fireOk
 end
 
+local function detectStPatricEventContext()
+	local potPrompt, potScore = findStPatricSubmitPrompt()
+	if potPrompt and potScore > 0 then
+		return true, "pot_prompt", potScore
+	end
+
+	local chestPrompts = getStPatricChestPrompts()
+	if #chestPrompts > 0 then
+		return true, "chest_phase", chestPrompts[1].score
+	end
+
+	return false, "no_markers", 0
+end
+
 scoreYesButton = function(button)
 	if not button or not safeIsA(button, "GuiButton") then
 		return 0
@@ -3400,6 +3414,15 @@ btn.MouseButton1Click:Connect(function()
 		if eventShieldMode then
 			setEventShieldMode(false, status)
 		end
+		local eventOk, eventReason, eventScore = detectStPatricEventContext()
+		if not eventOk then
+			watchMode = false
+			updateButtonState(btn)
+			debugLog("STP_CONTEXT_FAIL", "evento St Patric no detectado reason=" .. tostring(eventReason) .. " score=" .. tostring(eventScore))
+			status.Text = "STP: EVENTO NO DETECTADO"
+			return
+		end
+		debugLog("STP_CONTEXT_OK", "reason=" .. tostring(eventReason) .. " score=" .. tostring(eventScore))
 		stPatricChestPhase = false
 		resetSessionProgress()
 		invalidateRunToken("watchOn")
@@ -3457,6 +3480,17 @@ mainLoopThread = task.spawn(function()
 			local root = getRoot()
 			if not humanoid or not root or humanoid.Health <= 0 then
 				return
+			end
+
+			if not stPatricChestPhase then
+				local eventOk = detectStPatricEventContext()
+				if not eventOk then
+					debugLog("STP_CONTEXT_LOST", "marcadores del evento ya no existen")
+					releaseAutopilot("STP: EVENTO NO DETECTADO", status)
+					watchMode = false
+					updateButtonState(btn)
+					return
+				end
 			end
 
 			if stPatricChestPhase then
