@@ -21,10 +21,12 @@ local loopThread = nil
 local watchPromptConn = nil
 local characterAddedConn = nil
 local basePos = nil
+local depositPendingReset = false
+local lastDepositCount = 0
 
 local instantMove = true
 local flySpeed = 420
-local safeDepth = -8.5
+local safeDepth = -40
 local settleTime = 0.03
 local orbTouchTime = 0.05
 local depositDistance = 6
@@ -33,8 +35,11 @@ local orbRefreshDelay = 0.02
 local depositTargetCount = 100
 local postTouchCountPolls = 10
 local postTouchCountPollDelay = 0.03
-local orbApproachHeight = 3.0
+local orbApproachHeight = -10
+local orbTouchOffset = -7.5
 local depositApproachHeight = 3.0
+local depositRetreatOffset = -30
+local orbRetreatOffset = -18
 local maxStoredLogs = 250
 
 local storedLogs = {}
@@ -251,6 +256,14 @@ local function safeTravel(targetPos, finalYOffset, forcedSafeY)
 	return snapTo(stage3)
 end
 
+local function retreatUnderPosition(targetPos, retreatOffset)
+	if not targetPos then
+		return false
+	end
+	local safeY = resolveTravelY(targetPos, targetPos.Y + (retreatOffset or depositRetreatOffset))
+	return snapTo(CFrame.new(targetPos.X, safeY, targetPos.Z))
+end
+
 local function startMovementAssist()
 	if movementConn then
 		return
@@ -403,6 +416,20 @@ local function getHeldOrbCount()
 	return amount, prompt
 end
 
+local function isDepositResetComplete()
+	if not depositPendingReset then
+		return true
+	end
+	local heldCount = getHeldOrbCount()
+	if heldCount == 0 or heldCount < lastDepositCount then
+		depositPendingReset = false
+		lastDepositCount = 0
+		debugLog("DEPOSIT_RESET", "contador actualizado")
+		return true
+	end
+	return false
+end
+
 local function waitForHeldCountUpdate(previousCount)
 	local bestCount = previousCount or 0
 	local bestPrompt = nil
@@ -454,7 +481,8 @@ local function tryTouch(part)
 			firetouchinterest(root, part, 1)
 		end)
 	end
-	safeTravel(part.Position, 1.5)
+	safeTravel(part.Position, orbTouchOffset)
+	retreatUnderPosition(part.Position, orbRetreatOffset)
 	task.wait(orbTouchTime)
 	return true
 end
@@ -495,7 +523,13 @@ local function depositOrbs()
 	task.wait(settleTime)
 	local ok = firePrompt(prompt)
 	if ok then
+		depositPendingReset = true
+		lastDepositCount = heldCount
 		debugLog("DEPOSIT", string.format("held=%d path=%s action=%s", heldCount, safePath(prompt), safeText(prompt, "ActionText")))
+		local promptPosition = getModelPosition(prompt) or getModelPosition(prompt.Parent)
+		if promptPosition then
+			retreatUnderPosition(promptPosition, depositRetreatOffset)
+		end
 		return true
 	end
 	debugLog("DEPOSIT_FAIL", "no se pudo activar prompt")
@@ -503,6 +537,12 @@ local function depositOrbs()
 end
 
 local function collectOrbCycle()
+	if depositPendingReset then
+		if not isDepositResetComplete() then
+			task.wait(promptRetryDelay)
+			return
+		end
+	end
 	local heldCount = getHeldOrbCount()
 	if heldCount >= depositTargetCount then
 		depositOrbs()
