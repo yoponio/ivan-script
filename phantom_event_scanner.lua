@@ -27,6 +27,7 @@ local highlightRefreshQueued = false
 local logUiRefreshQueued = false
 local scanInProgress = false
 local scanBatchSize = 250
+local scoreInstance
 
 local function safeIsA(instance, className)
 	local ok, result = pcall(function()
@@ -440,7 +441,7 @@ local function processWatchedDescendant(sourceLabel, descendant)
 	scheduleHighlightRefresh()
 end
 
-local function scoreInstance(instance)
+scoreInstance = function(instance)
 	if not instance then
 		return 0, ""
 	end
