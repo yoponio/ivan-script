@@ -23,7 +23,7 @@ local eventShieldMode = false
 local isRespawning = false
 
 local farmSpeed = 500
-local firstTripSpeed = 220
+local firstTripSpeed = 500
 local startupStabilizeTime = 0.45
 local safeDepth = -6.5
 local depositRise = 0.08
@@ -50,9 +50,13 @@ local shieldRecoverStep = 0.08
 local shieldRecoverInterval = 0.30
 local shieldRecoverDelayAfterHit = 0.80
 local shieldExitStabilizeTime = 0.18
-local stPatricSubmitCooldown = 1.25
+local stPatricSubmitCooldown = 0.60
 local stPatricLastSubmitAttempt = 0
 local stPatricPromptHeightOffset = -4.5
+local stPatricNearFullMargin = 1
+local stPatricPostTriggerDelay = 0.12
+local stPatricSubmitCheckInterval = 0.06
+local stPatricRequiredDrainChecks = 1
 
 local invCount = 0
 local basePos = nil
@@ -94,6 +98,7 @@ local mainButton = nil
 local towerButton = nil
 local shieldButton = nil
 local copyLogsButton = nil
+local resetLogsButton = nil
 local shieldCFrame = nil
 local shieldBaseCFrame = nil
 local shieldRetreatOffset = 0
@@ -375,6 +380,8 @@ local function getStPatricDialogContextScore(root)
 	return score
 end
 
+local scoreYesButton
+
 local function getStPatricYesDebugCandidates(limit)
 	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
 	if not playerGui then
@@ -383,7 +390,7 @@ local function getStPatricYesDebugCandidates(limit)
 
 	local candidates = {}
 	for _, descendant in ipairs(playerGui:GetDescendants()) do
-		if safeIsA(descendant, "GuiButton") then
+		if safeIsA(descendant, "GuiButton") and scoreYesButton then
 			local text = safeText(descendant)
 			local name = safeName(descendant)
 			local path = safeInstancePath(descendant)
@@ -448,6 +455,27 @@ local function getStPatricYesDebugCandidates(limit)
 	end
 
 	return table.concat(parts, " || ")
+end
+
+local function getVisibleStPatricDialog()
+	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
+	if not playerGui then
+		return false, nil, 0
+	end
+
+	local bestPath = nil
+	local bestScore = 0
+	for _, descendant in ipairs(playerGui:GetDescendants()) do
+		if safeIsA(descendant, "GuiObject") and safeGuiVisible(descendant) then
+			local score = getStPatricDialogContextScore(descendant)
+			if score > bestScore then
+				bestScore = score
+				bestPath = safeInstancePath(descendant)
+			end
+		end
+	end
+
+	return bestScore >= 8, bestPath, bestScore
 end
 
 local function safePromptData(prompt)
@@ -553,6 +581,28 @@ local function copyLogsToClipboard(status)
 
 	debugLog(copied and "LOG_COPY_OK" or "LOG_COPY_FAIL", copied and ("entries=" .. tostring(#storedLogs)) or tostring(copyError or "sin API de clipboard"))
 	return copied
+end
+
+local function clearStoredLogs(status)
+	storedLogs = {}
+	lastScanSummary = ""
+	lastSelectionSummary = ""
+	updateCopyLogsButtonState()
+	if status then
+		status.Text = "LOGS REINICIADOS"
+	end
+end
+
+local function copyLogsAndReset(status)
+	if copyLogsToClipboard(status) then
+		clearStoredLogs(status)
+		if status then
+			status.Text = "LOGS COPIADOS Y REINICIADOS"
+		end
+		debugLog("LOG_RESET_OK", "buffer reiniciado tras copia")
+		return true
+	end
+	return false
 end
 
 local function debugOnce(eventName, details, key)
@@ -2137,16 +2187,17 @@ local function getStPatricTargets()
 		end
 	end
 
+	local carryCount = getEffectiveCarryCount()
+	local preferClosest = carryCount >= math.max(1, returnAt - stPatricNearFullMargin)
+
 	table.sort(results, function(a, b)
-		local pa = getTargetPriority(a)
-		local pb = getTargetPriority(b)
-
-		if pa ~= pb then
-			return pa > pb
-		end
-
 		local root = getRoot()
 		if not root then
+			local pa = getTargetPriority(a)
+			local pb = getTargetPriority(b)
+			if pa ~= pb then
+				return pa > pb
+			end
 			return safeInstancePath(a) < safeInstancePath(b)
 		end
 
@@ -2157,6 +2208,21 @@ local function getStPatricTargets()
 		end
 		if not posb then
 			return true
+		end
+
+		if preferClosest then
+			local distA = (root.Position - posa).Magnitude
+			local distB = (root.Position - posb).Magnitude
+			if math.abs(distA - distB) > 12 then
+				return distA < distB
+			end
+		end
+
+		local pa = getTargetPriority(a)
+		local pb = getTargetPriority(b)
+
+		if pa ~= pb then
+			return pa > pb
 		end
 
 		return (root.Position - posa).Magnitude < (root.Position - posb).Magnitude
@@ -2272,7 +2338,7 @@ local function findStPatricSubmitPrompt()
 	return bestPrompt, bestScore
 end
 
-local function scoreYesButton(button)
+scoreYesButton = function(button)
 	if not button or not safeIsA(button, "GuiButton") then
 		return 0
 	end
@@ -2314,25 +2380,52 @@ local function scoreYesButton(button)
 	return score
 end
 
-local function findStPatricYesButton()
+local function getRankedStPatricYesButtons(limit)
 	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
 	if not playerGui then
-		return nil, 0
+		return {}
 	end
 
-	local bestButton = nil
-	local bestScore = 0
+	local ranked = {}
 	for _, descendant in ipairs(playerGui:GetDescendants()) do
 		if safeIsA(descendant, "GuiButton") then
 			local score = scoreYesButton(descendant)
-			if score > bestScore then
-				bestScore = score
-				bestButton = descendant
+			if score > 0 then
+				table.insert(ranked, {
+					button = descendant,
+					score = score,
+					area = safeGuiArea(descendant),
+					path = safeInstancePath(descendant),
+				})
 			end
 		end
 	end
 
-	return bestButton, bestScore
+	table.sort(ranked, function(a, b)
+		if a.score ~= b.score then
+			return a.score > b.score
+		end
+		if a.area ~= b.area then
+			return a.area > b.area
+		end
+		return a.path < b.path
+	end)
+
+	if limit and #ranked > limit then
+		for i = #ranked, limit + 1, -1 do
+			table.remove(ranked, i)
+		end
+	end
+
+	return ranked
+end
+
+local function findStPatricYesButton()
+	local ranked = getRankedStPatricYesButtons(1)
+	if #ranked == 0 then
+		return nil, 0
+	end
+	return ranked[1].button, ranked[1].score
 end
 
 local function activateStPatricYesButton(button)
@@ -2368,19 +2461,28 @@ end
 
 local function confirmStPatricDialog(status)
 	local deadline = os.clock() + 3.5
+	local dialogSeen = false
 	while os.clock() < deadline do
 		if scriptClosed then
-			return false
+			return false, dialogSeen
 		end
 
-		local yesButton, score = findStPatricYesButton()
-		if yesButton then
+		local rankedButtons = getRankedStPatricYesButtons(3)
+		if #rankedButtons > 0 then
+			dialogSeen = true
+		end
+		local dialogVisible = getVisibleStPatricDialog()
+		dialogSeen = dialogSeen or dialogVisible
+		for _, entry in ipairs(rankedButtons) do
+			local yesButton = entry.button
 			local ok = activateStPatricYesButton(yesButton)
-			debugLog("STP_CONFIRM", "button=" .. safeInstancePath(yesButton) .. " score=" .. tostring(score) .. " ok=" .. tostring(ok))
+			debugLog("STP_CONFIRM", "button=" .. safeInstancePath(yesButton) .. " score=" .. tostring(entry.score) .. " ok=" .. tostring(ok))
 			if status then
 				status.Text = ok and "STP: CONFIRMANDO..." or "STP: YES DETECTADO"
 			end
-			return ok
+			if ok then
+				return true, dialogSeen
+			end
 		end
 
 		task.wait(0.1)
@@ -2388,7 +2490,7 @@ local function confirmStPatricDialog(status)
 
 	debugLog("STP_CONFIRM_FAIL", "yes button no detectado")
 	debugLog("STP_CONFIRM_CANDIDATES", getStPatricYesDebugCandidates(5))
-	return false
+	return false, dialogSeen
 end
 
 local function submitStPatricLoad(status, runToken)
@@ -2453,10 +2555,11 @@ local function submitStPatricLoad(status, runToken)
 		end)
 		debugLog("STP_SUBMIT_TRIGGER", "prompt=" .. safeInstancePath(prompt) .. " ok=" .. tostring(fireOk) .. (fireErr and (" err=" .. tostring(fireErr)) or "") .. " attempt=" .. tostring(attempt))
 
-		task.wait(0.2)
-		confirmStPatricDialog(status)
+		task.wait(stPatricPostTriggerDelay)
+		local confirmOk, dialogSeen = confirmStPatricDialog(status)
+		local drainedConfirmations = 0
 
-		local deadline = os.clock() + 2.5
+		local deadline = os.clock() + 1.8
 		while os.clock() < deadline do
 			if runToken ~= nil and not isOperationValid(runToken) then
 				debugLog("STP_SUBMIT_ABORT", "operacion invalidada esperando confirmacion de entrega")
@@ -2468,9 +2571,23 @@ local function submitStPatricLoad(status, runToken)
 				isReturning = false
 				return false
 			end
+			if promptPos then
+				local holdGoal = CFrame.new(promptPos.X, promptPos.Y + stPatricPromptHeightOffset, promptPos.Z)
+				if getGoalDistance(holdGoal) > 6 then
+					snapCharacterTo(holdGoal)
+				end
+			end
 			local toolsNow = getFarmToolCount()
 			local carryNow = getEffectiveCarryCount()
-			if toolsNow < toolsBefore or carryNow <= 0 then
+			local dialogVisible, dialogPath, dialogScore = getVisibleStPatricDialog()
+			local carryDrained = toolsNow < toolsBefore or carryNow <= 0
+			local promptData = safePromptData(prompt)
+			if carryDrained and not dialogVisible then
+				drainedConfirmations = drainedConfirmations + 1
+			else
+				drainedConfirmations = 0
+			end
+			if drainedConfirmations >= stPatricRequiredDrainChecks and (confirmOk or dialogSeen or not promptData.enabled) then
 				captureBaselineTools()
 				invCount = 0
 				grabAttempts = 0
@@ -2480,11 +2597,11 @@ local function submitStPatricLoad(status, runToken)
 				isReturning = false
 				refreshTargets(true)
 				status.Text = "STP: ENTREGA OK"
-				debugLog("STP_SUBMIT_OK", "carry_before=" .. tostring(carryCount) .. " tools_before=" .. tostring(toolsBefore) .. " tools_now=" .. tostring(toolsNow))
+				debugLog("STP_SUBMIT_OK", "carry_before=" .. tostring(carryCount) .. " tools_before=" .. tostring(toolsBefore) .. " tools_now=" .. tostring(toolsNow) .. " dialog_score=" .. tostring(dialogScore) .. " dialog_path=" .. tostring(dialogPath or "none"))
 				releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
 				return true
 			end
-			task.wait(0.1)
+			task.wait(stPatricSubmitCheckInterval)
 		end
 	end
 
@@ -2674,7 +2791,7 @@ Instance.new("UICorner", filtersBtn)
 filtersBtn.Visible = false
 
 local copyLogsBtn = Instance.new("TextButton", panel)
-copyLogsBtn.Size = UDim2.new(1, 0, 0, 24)
+copyLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
 copyLogsBtn.Position = UDim2.new(0, 0, 0, 114)
 copyLogsBtn.TextColor3 = Color3.new(1, 1, 1)
 copyLogsBtn.BackgroundColor3 = Color3.fromRGB(65, 90, 140)
@@ -2683,6 +2800,18 @@ copyLogsBtn.TextSize = 11
 copyLogsBtn.BorderSizePixel = 0
 Instance.new("UICorner", copyLogsBtn)
 copyLogsButton = copyLogsBtn
+
+local resetLogsBtn = Instance.new("TextButton", panel)
+resetLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
+resetLogsBtn.Position = UDim2.new(0.5, 2, 0, 114)
+resetLogsBtn.Text = "COPIAR + NUEVOS 250"
+resetLogsBtn.TextColor3 = Color3.new(1, 1, 1)
+resetLogsBtn.BackgroundColor3 = Color3.fromRGB(110, 75, 45)
+resetLogsBtn.Font = Enum.Font.GothamBold
+resetLogsBtn.TextSize = 11
+resetLogsBtn.BorderSizePixel = 0
+Instance.new("UICorner", resetLogsBtn)
+resetLogsButton = resetLogsBtn
 
 local scroll = Instance.new("ScrollingFrame", frame)
 scroll.Size = UDim2.new(1, -12, 0, 146)
@@ -2765,6 +2894,7 @@ local function shutdownScript()
 	towerButton = nil
 	shieldButton = nil
 	copyLogsButton = nil
+	resetLogsButton = nil
 
 	if sg then
 		sg:Destroy()
@@ -2850,6 +2980,13 @@ copyLogsBtn.MouseButton1Click:Connect(function()
 	end
 	copyLogsToClipboard(status)
 	updateCopyLogsButtonState()
+end)
+
+resetLogsBtn.MouseButton1Click:Connect(function()
+	if scriptClosed then
+		return
+	end
+	copyLogsAndReset(status)
 end)
 
 for _, name in ipairs(filterOrder) do
