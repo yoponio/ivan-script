@@ -29,6 +29,7 @@ local basePos = nil
 local depositPendingReset = false
 local lastDepositCount = 0
 local orbBlacklist = {}
+local lastRespawnAt = 0
 
 local instantMove = true
 local flySpeed = 420
@@ -39,14 +40,15 @@ local depositDistance = 6
 local promptRetryDelay = 0.08
 local orbRefreshDelay = 0.02
 local depositTargetCount = 100
-local postTouchCountPolls = 10
-local postTouchCountPollDelay = 0.03
+local postTouchCountPolls = 18
+local postTouchCountPollDelay = 0.05
 local orbApproachHeight = -24
 local depositApproachHeight = 3.0
 local depositRetreatOffset = -30
 local orbRetreatOffset = -18
 local remoteTouchAttempts = 3
 local orbBlacklistSeconds = 8
+local maxOrbDistance = 350
 local maxStoredLogs = 250
 
 local storedLogs = {}
@@ -401,7 +403,7 @@ local function getNearestOrb()
 				local part = resolveOrbPart(descendant)
 				if part then
 					local distance = (root.Position - part.Position).Magnitude
-					if distance < bestDistance then
+					if distance <= maxOrbDistance and distance < bestDistance then
 						bestDistance = distance
 						bestModel = descendant
 						bestPart = part
@@ -462,18 +464,22 @@ end
 local function waitForHeldCountUpdate(previousCount)
 	local bestCount = previousCount or 0
 	local bestPrompt = nil
+	local respawnDetected = false
 	for _ = 1, postTouchCountPolls do
+		if lastRespawnAt > 0 and os.clock() - lastRespawnAt <= 1 then
+			respawnDetected = true
+		end
 		local heldCount, prompt = getHeldOrbCount()
 		if heldCount > bestCount then
 			bestCount = heldCount
 			bestPrompt = prompt
 		end
 		if heldCount >= depositTargetCount then
-			return heldCount, prompt
+			return heldCount, prompt, respawnDetected
 		end
 		taskWait(postTouchCountPollDelay)
 	end
-	return bestCount, bestPrompt
+	return bestCount, bestPrompt, respawnDetected
 end
 
 local function firePrompt(prompt)
@@ -588,6 +594,11 @@ local function collectOrbCycle()
 		taskWait(orbRefreshDelay)
 		return
 	end
+	if distance > maxOrbDistance then
+		debugLog("ORB_FAR_WAIT", string.format("held=%d/%d dist=%.1f max=%.1f", heldCount, depositTargetCount, distance, maxOrbDistance))
+		taskWait(orbRefreshDelay)
+		return
+	end
 	debugLog("ORB_TARGET", string.format("held=%d/%d dist=%.1f path=%s", heldCount, depositTargetCount, distance, safePath(orbModel)))
 	local approach = CFrame.new(orbPart.Position.X, resolveTravelY(orbPart.Position), orbPart.Position.Z)
 	if not moveTo(approach, flySpeed) then
@@ -597,8 +608,13 @@ local function collectOrbCycle()
 	tryTouch(orbPart)
 	debugLog("ORB_TOUCH", safePath(orbPart))
 	taskWait(orbTouchTime)
-	local refreshedCount = waitForHeldCountUpdate(heldCount)
+	local refreshedCount, _, respawnDetected = waitForHeldCountUpdate(heldCount)
 	if refreshedCount <= heldCount then
+		if respawnDetected then
+			debugLog("ORB_RETRY", string.format("path=%s reason=respawn durante confirmacion", safePath(orbModel)))
+			taskWait(orbRefreshDelay)
+			return
+		end
 		blacklistOrb(orbModel, "sin aumento de contador")
 		taskWait(orbRefreshDelay)
 		return
@@ -654,6 +670,7 @@ local function setAutoFarm(state)
 end
 
 local function onCharacterAdded(character)
+	lastRespawnAt = os.clock()
 	debugLog("RESPAWN", safePath(character))
 	taskWait(1)
 	local root = getRoot()
