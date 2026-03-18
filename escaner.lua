@@ -32,7 +32,7 @@ if not LP then
 	return
 end
 
-local scannerVersion = "escaner-r2-lite"
+local scannerVersion = "escaner-r3-godtrace"
 local maxStoredLogs = 1200
 local maxVisibleLogs = 180
 local clipboardChunkSize = 90000
@@ -67,7 +67,9 @@ local characterToolAddedConn
 local characterToolRemovedConn
 local backpackToolAddedConn
 local backpackToolRemovedConn
+local characterDescendantAddedConn
 local promptConnections = {}
+local godTraceConnections = {}
 local lastMovePosition = nil
 local lastMoveAt = 0
 local lastGuiSnapshot = ""
@@ -513,6 +515,16 @@ local function disconnectConnection(conn)
 	return nil
 end
 
+local function clearConnectionList(list)
+	for index = #list, 1, -1 do
+		local conn = list[index]
+		if conn then
+			conn:Disconnect()
+		end
+		list[index] = nil
+	end
+end
+
 local function clearPromptConnections()
 	for index = #promptConnections, 1, -1 do
 		local conn = promptConnections[index]
@@ -589,6 +601,72 @@ local function getCharacterPartsSnapshot(character)
 		end
 	end
 	return string.format("parts=%d nocollide=%d notouch=%d anchored=%d", totalParts, nonCollideCount, nonTouchCount, anchoredCount)
+end
+
+local function attachGodTracePropertyHook(instance, propertyName, category, action)
+	if not instance then
+		return
+	end
+	table.insert(godTraceConnections, instance:GetPropertyChangedSignal(propertyName):Connect(function()
+		if observerClosed or not observerEnabled or captureMode ~= "GODTRACE" then
+			return
+		end
+		local value = nil
+		pcall(function()
+			value = instance[propertyName]
+		end)
+		log(category, action, safeName(instance), propertyName .. "=" .. tostring(value) .. " path=" .. safePath(instance))
+	end))
+end
+
+local function attachGodTracePartHooks(part)
+	if not part or not part:IsA("BasePart") then
+		return
+	end
+	attachGodTracePropertyHook(part, "CanCollide", "GOD", "PART_PROP")
+	attachGodTracePropertyHook(part, "CanTouch", "GOD", "PART_PROP")
+	attachGodTracePropertyHook(part, "Anchored", "GOD", "PART_PROP")
+end
+
+local function attachGodTraceHooks(character, humanoid)
+	clearConnectionList(godTraceConnections)
+	characterDescendantAddedConn = disconnectConnection(characterDescendantAddedConn)
+
+	if humanoid then
+		attachGodTracePropertyHook(humanoid, "WalkSpeed", "GOD", "HUM_PROP")
+		attachGodTracePropertyHook(humanoid, "JumpPower", "GOD", "HUM_PROP")
+		attachGodTracePropertyHook(humanoid, "UseJumpPower", "GOD", "HUM_PROP")
+		attachGodTracePropertyHook(humanoid, "HipHeight", "GOD", "HUM_PROP")
+		attachGodTracePropertyHook(humanoid, "PlatformStand", "GOD", "HUM_PROP")
+		attachGodTracePropertyHook(humanoid, "Sit", "GOD", "HUM_PROP")
+		attachGodTracePropertyHook(humanoid, "BreakJointsOnDeath", "GOD", "HUM_PROP")
+		attachGodTracePropertyHook(humanoid, "AutoRotate", "GOD", "HUM_PROP")
+	end
+
+	local root = character and character:FindFirstChild("HumanoidRootPart") or nil
+	if root then
+		attachGodTracePropertyHook(root, "Anchored", "GOD", "ROOT_PROP")
+		attachGodTracePropertyHook(root, "CanCollide", "GOD", "ROOT_PROP")
+		attachGodTracePropertyHook(root, "CanTouch", "GOD", "ROOT_PROP")
+	end
+
+	if character then
+		for _, descendant in ipairs(character:GetDescendants()) do
+			attachGodTracePartHooks(descendant)
+		end
+
+		characterDescendantAddedConn = character.DescendantAdded:Connect(function(descendant)
+			if observerClosed then
+				return
+			end
+			if descendant:IsA("BasePart") then
+				attachGodTracePartHooks(descendant)
+				if captureMode == "GODTRACE" and observerEnabled then
+					log("GOD", "PART_ADD", safeName(descendant), safePath(descendant))
+				end
+			end
+		end)
+	end
 end
 
 local function pollGodTraceSignals()
@@ -946,6 +1024,7 @@ local function bindCharacterHooks(character)
 	end)
 
 	bindToolHooks(character)
+	attachGodTraceHooks(character, humanoid)
 	lastMovePosition = nil
 	lastGodHumanoidSnapshot = ""
 	lastGodRootSnapshot = ""
@@ -965,6 +1044,14 @@ local function pollMovement(now)
 	end
 	local distance = (root.Position - lastMovePosition).Magnitude
 	if distance >= moveThreshold then
+		if captureMode == "GODTRACE" and distance >= 20 and root.AssemblyLinearVelocity.Magnitude <= 1 then
+			log(
+				"GOD",
+				"STEP_PATTERN",
+				"HumanoidRootPart",
+				string.format("teleport_like=true dist=%.1f vel=%.2f from=(%s) to=(%s)", distance, root.AssemblyLinearVelocity.Magnitude, formatVector(lastMovePosition), formatVector(root.Position))
+			)
+		end
 		log(
 			"MOVE",
 			"STEP",
@@ -1273,6 +1360,8 @@ local function createUi()
 		characterToolRemovedConn = disconnectConnection(characterToolRemovedConn)
 		backpackToolAddedConn = disconnectConnection(backpackToolAddedConn)
 		backpackToolRemovedConn = disconnectConnection(backpackToolRemovedConn)
+		characterDescendantAddedConn = disconnectConnection(characterDescendantAddedConn)
+		clearConnectionList(godTraceConnections)
 		clearPromptConnections()
 		if mainLoopThread then
 			pcall(function()
