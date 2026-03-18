@@ -452,6 +452,26 @@ local function getStPatricYesDebugCandidates(limit)
 	return table.concat(parts, " || ")
 end
 
+local function findExactStPatricYesButton(playerGui)
+	if not playerGui then
+		return nil, 0
+	end
+
+	local choiceGui = playerGui:FindFirstChild("ChoiceGui", true)
+	if not choiceGui then
+		return nil, 0
+	end
+
+	local choiceRoot = choiceGui:FindFirstChild("Choice", true)
+	local choices = choiceRoot and choiceRoot:FindFirstChild("Choices")
+	local yesButton = choices and choices:FindFirstChild("Yes")
+	if yesButton and safeIsA(yesButton, "GuiButton") and safeGuiVisible(yesButton) then
+		return yesButton, 1000 + scoreYesButton(yesButton)
+	end
+
+	return nil, 0
+end
+
 local function safePromptData(prompt)
 	local data = {
 		actionText = "",
@@ -2322,6 +2342,11 @@ local function findStPatricYesButton()
 		return nil, 0
 	end
 
+	local exactButton, exactScore = findExactStPatricYesButton(playerGui)
+	if exactButton then
+		return exactButton, exactScore
+	end
+
 	local bestButton = nil
 	local bestScore = 0
 	for _, descendant in ipairs(playerGui:GetDescendants()) do
@@ -2369,7 +2394,7 @@ local function activateStPatricYesButton(button)
 end
 
 local function confirmStPatricDialog(status)
-	local deadline = os.clock() + 3.5
+	local deadline = os.clock() + 5.0
 	while os.clock() < deadline do
 		if scriptClosed then
 			return false
@@ -2389,7 +2414,10 @@ local function confirmStPatricDialog(status)
 	end
 
 	debugLog("STP_CONFIRM_FAIL", "yes button no detectado")
-	debugLog("STP_CONFIRM_CANDIDATES", getStPatricYesDebugCandidates(5))
+	local ok, details = pcall(function()
+		return getStPatricYesDebugCandidates(5)
+	end)
+	debugLog("STP_CONFIRM_CANDIDATES", ok and details or ("debug_fail=" .. tostring(details)))
 	return false
 end
 
@@ -2458,7 +2486,7 @@ local function submitStPatricLoad(status, runToken)
 		task.wait(0.2)
 		confirmStPatricDialog(status)
 
-		local deadline = os.clock() + 2.5
+		local deadline = os.clock() + 4.0
 		while os.clock() < deadline do
 			if runToken ~= nil and not isOperationValid(runToken) then
 				debugLog("STP_SUBMIT_ABORT", "operacion invalidada esperando confirmacion de entrega")
