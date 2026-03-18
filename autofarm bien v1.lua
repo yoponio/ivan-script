@@ -75,7 +75,8 @@ local pendingBrainrotSpawnCount = 0
 local pendingBrainrotSpawnSample = nil
 local brainrotSpawnLogWindow = 0.35
 local logEnabled = true
-local maxStoredLogs = 250
+local maxStoredLogs = 2000
+local logCopyBatchSize = 500
 local storedLogs = {}
 local lastScanSummary = ""
 local lastSelectionSummary = ""
@@ -198,7 +199,8 @@ local function updateCopyLogsButtonState()
 		return
 	end
 
-	copyLogsButton.Text = "COPIAR LOGS (" .. tostring(#storedLogs) .. ")"
+	local pendingBatchCount = math.min(#storedLogs, logCopyBatchSize)
+	copyLogsButton.Text = "COPIAR " .. tostring(pendingBatchCount) .. " (" .. tostring(#storedLogs) .. ")"
 end
 
 local noisyLogEvents = {
@@ -243,8 +245,31 @@ local function getStoredLogDump()
 	return table.concat(storedLogs, "\n")
 end
 
+local function getStoredLogBatchDump(batchSize)
+	if #storedLogs == 0 then
+		return "[OSAKA] no hay logs capturados todavia", 0
+	end
+
+	local limit = math.min(batchSize or logCopyBatchSize, #storedLogs)
+	local lines = {}
+	for index = 1, limit do
+		table.insert(lines, storedLogs[index])
+	end
+	return table.concat(lines, "\n"), limit
+end
+
+local function dropStoredLogBatch(count)
+	if count <= 0 then
+		return
+	end
+	for _ = 1, count do
+		table.remove(storedLogs, 1)
+	end
+	updateCopyLogsButtonState()
+end
+
 local function copyLogsToClipboard(status)
-	local payload = getStoredLogDump()
+	local payload, copiedEntries = getStoredLogBatchDump(logCopyBatchSize)
 	local copyFns = {setclipboard, toclipboard}
 	local copied = false
 	local copyError = nil
@@ -268,11 +293,19 @@ local function copyLogsToClipboard(status)
 		copyError = ok and copyError or err
 	end
 
-	if status then
-		status.Text = copied and ("LOGS COPIADOS: " .. tostring(#storedLogs)) or "NO SE PUDO COPIAR LOGS"
+	if copied and copiedEntries > 0 then
+		dropStoredLogBatch(copiedEntries)
 	end
 
-	debugLog(copied and "LOG_COPY_OK" or "LOG_COPY_FAIL", copied and ("entries=" .. tostring(#storedLogs)) or tostring(copyError or "sin API de clipboard"))
+	if status then
+		status.Text = copied and ("LOGS COPIADOS: " .. tostring(copiedEntries) .. " | RESTAN: " .. tostring(#storedLogs)) or "NO SE PUDO COPIAR LOGS"
+	end
+
+	if copied then
+		print(string.format("[OSAKA][%.3f][LOG_COPY_OK] entries=%d restan=%d", os.clock(), copiedEntries, #storedLogs))
+	else
+		debugLog("LOG_COPY_FAIL", tostring(copyError or "sin API de clipboard"))
+	end
 	return copied
 end
 
