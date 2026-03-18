@@ -2,7 +2,7 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
-local scriptVersion = "v79.2-r6-watchoff-guard"
+local scriptVersion = "v79.2-r7-respawn-cleanup"
 
 print("--- INICIANDO OSAKA " .. scriptVersion .. " (FREE SENTINEL FIX) ---")
 
@@ -20,6 +20,7 @@ local returnLocked = false
 local scriptClosed = false
 local towerPriorityMode = false
 local eventShieldMode = false
+local isRespawning = false
 
 local farmSpeed = 500
 local firstTripSpeed = 220
@@ -834,6 +835,19 @@ local function getTargetPosition(target)
 	return nil
 end
 
+local function isPreferredLiveTarget(target)
+	if not target or not target:IsDescendantOf(workspace) then
+		return false
+	end
+
+	local brainrots = workspace:FindFirstChild("ActiveBrainrots")
+	if brainrots then
+		return target:IsDescendantOf(brainrots)
+	end
+
+	return true
+end
+
 local function engageAutopilot(reason, status)
 	local humanoid = getHumanoid()
 	local root = getRoot()
@@ -1161,10 +1175,10 @@ end
 local function getClosestTarget()
 	local cache, availableCount = refreshTargets(false)
 
-	if currentTarget and isValidTarget(currentTarget) then
+	if currentTarget and isValidTarget(currentTarget) and isPreferredLiveTarget(currentTarget) then
 		local currentPriority = getTargetPriority(currentTarget)
 		for _, candidate in ipairs(cache) do
-			if candidate ~= currentTarget and isValidTarget(candidate) then
+			if candidate ~= currentTarget and isValidTarget(candidate) and isPreferredLiveTarget(candidate) then
 				local candidatePriority = getTargetPriority(candidate)
 				if candidatePriority > currentPriority then
 					currentTarget = candidate
@@ -1181,7 +1195,13 @@ local function getClosestTarget()
 		return currentTarget, availableCount
 	end
 
-	currentTarget = cache[1]
+	currentTarget = nil
+	for _, candidate in ipairs(cache) do
+		if isValidTarget(candidate) and isPreferredLiveTarget(candidate) then
+			currentTarget = candidate
+			break
+		end
+	end
 	if currentTarget then
 		debugOnce(
 			"TARGET_LOCK",
@@ -1295,7 +1315,7 @@ local function ghostReturnTravel(targetPos, runToken)
 		return false
 	end
 
-	local cruiseY = math.min(root.Position.Y - 4, basePos.Y + returnApproachDepth)
+	local cruiseY = math.max(basePos.Y + safeDepth, root.Position.Y - 1.5)
 	cruiseY = resolveTravelY(targetPos, cruiseY, false)
 	return ghostTravel(targetPos, cruiseY, false, runToken)
 end
@@ -1642,8 +1662,23 @@ local function returnToBase(status, reasonText, runToken)
 	local reached = ghostReturnTravel(returnPos, runToken)
 	if not reached then
 		debugLog("RETURN_ROUTE", "fallo ruta principal, usando recover")
+		if runToken ~= nil and not isOperationValid(runToken) then
+			debugLog("RETURN_ABORT", "operacion invalidada tras ruta principal")
+			isReturning = false
+			return false
+		end
 		emergencyRecover(status)
+		if runToken ~= nil and not isOperationValid(runToken) then
+			debugLog("RETURN_ABORT", "operacion invalidada durante recover")
+			isReturning = false
+			return false
+		end
 		ghostReturnTravel(returnPos, runToken)
+	end
+	if runToken ~= nil and not isOperationValid(runToken) then
+		debugLog("RETURN_ABORT", "operacion invalidada despues del retorno")
+		isReturning = false
+		return false
 	end
 
 	local root = getRoot()
@@ -1663,24 +1698,49 @@ local function returnToBase(status, reasonText, runToken)
 	if wallWaypoint then
 		debugLog("RETURN_STAGE", "wallWaypoint")
 		moveReturnTunnel(wallWaypoint, status, "PEGANDOSE A LA PARED...", runToken)
+		if runToken ~= nil and not isOperationValid(runToken) then
+			debugLog("RETURN_ABORT", "operacion invalidada en wallWaypoint")
+			isReturning = false
+			return false
+		end
 		trackedHealth = logHealthState("after_wallWaypoint", humanoid, trackedHealth)
 	end
 
 	debugLog("RETURN_STAGE", "tunnelStage")
 	moveReturnStage(tunnelStage, status, "ENTRANDO POR ABAJO...", runToken)
+	if runToken ~= nil and not isOperationValid(runToken) then
+		debugLog("RETURN_ABORT", "operacion invalidada en tunnelStage")
+		isReturning = false
+		return false
+	end
 	trackedHealth = logHealthState("after_tunnelStage", humanoid, trackedHealth)
 	task.wait(0.08)
 	debugLog("RETURN_STAGE", "stageOne")
 	moveReturnStage(stageOne, status, "BAJANDO AL RETORNO...", runToken)
+	if runToken ~= nil and not isOperationValid(runToken) then
+		debugLog("RETURN_ABORT", "operacion invalidada en stageOne")
+		isReturning = false
+		return false
+	end
 	trackedHealth = logHealthState("after_stageOne", humanoid, trackedHealth)
 	task.wait(0.08)
 	debugLog("RETURN_STAGE", "stageTwo")
 	moveReturnStage(stageTwo, status, "LLEGANDO A HOME...", runToken)
+	if runToken ~= nil and not isOperationValid(runToken) then
+		debugLog("RETURN_ABORT", "operacion invalidada en stageTwo")
+		isReturning = false
+		return false
+	end
 	trackedHealth = logHealthState("after_stageTwo", humanoid, trackedHealth)
 	task.wait(0.08)
 
 	status.Text = "DESCARGANDO EN HOME..."
 	local unequipped = forceUnequipFarmTools(humanoid)
+	if runToken ~= nil and not isOperationValid(runToken) then
+		debugLog("RETURN_ABORT", "operacion invalidada al desequipar")
+		isReturning = false
+		return false
+	end
 	trackedHealth = logHealthState("after_unequip", humanoid, trackedHealth)
 	task.wait(0.12)
 	captureBaselineTools()
@@ -1902,21 +1962,33 @@ local function shutdownScript()
 	if scriptClosed then
 		return
 	end
-	invalidateRunToken("shutdown")
 
 	scriptClosed = true
+	isRespawning = false
 	watchMode = false
 	autoPilot = false
 	isReturning = false
 	isGrabbing = false
 	returnLocked = false
 	forceRescan = false
+	currentTarget = nil
+	blacklist = {}
+	targetCache = {}
+	storedLogs = {}
+	lastScanSummary = ""
+	lastSelectionSummary = ""
+	lastScanHint = ""
+	startupReleaseTime = 0
+	firstTripPending = false
+	invalidateRunToken("shutdown")
 
 	local humanoid = getHumanoid()
 	local root = getRoot()
+	restoreCharacterCollisionState()
 	if root then
 		root.AssemblyLinearVelocity = Vector3.zero
 		root.AssemblyAngularVelocity = Vector3.zero
+		root.Anchored = false
 	end
 	if humanoid then
 		humanoid.PlatformStand = false
@@ -1934,9 +2006,16 @@ local function shutdownScript()
 		mainLoopThread = nil
 	end
 
+	mainButton = nil
+	towerButton = nil
+	shieldButton = nil
+	copyLogsButton = nil
+
 	if sg then
 		sg:Destroy()
+		sg = nil
 	end
+	logEnabled = false
 	print("--- OSAKA CERRADO COMPLETAMENTE ---")
 end
 
@@ -2138,20 +2217,12 @@ local function bindCharacter(btnRef, statusRef)
 	local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
 	if humanoid then
 		diedConn = humanoid.Died:Connect(function()
+			if scriptClosed then
+				return
+			end
+			isRespawning = true
 			debugLog("DEATH", "personaje murio, watchMode=" .. tostring(watchMode))
 			stopFarm("RESPAWN DETECTADO - REARMANDO...", btnRef, statusRef, true)
-			task.delay(2, function()
-				local newCharacter = LP.Character or LP.CharacterAdded:Wait()
-				local newRoot = newCharacter:FindFirstChild("HumanoidRootPart") or newCharacter:WaitForChild("HumanoidRootPart", 5)
-				if newRoot and watchMode then
-					basePos = newRoot.Position
-					flyValue.Value = newRoot.CFrame
-					captureBaselineTools()
-					releaseAutopilot("VIGILANDO LIBRE...", statusRef)
-					updateButtonState(btnRef)
-					refreshTargets(true)
-				end
-			end)
 		end)
 	end
 end
@@ -2164,8 +2235,14 @@ if charAddedConn then
 end
 
 charAddedConn = LP.CharacterAdded:Connect(function()
+	if scriptClosed then
+		return
+	end
 	debugLog("CHARACTER_ADDED", "nuevo character detectado")
 	task.wait(0.75)
+	if scriptClosed then
+		return
+	end
 	bindCharacter(btn, status)
 	if watchMode then
 		local root = getRoot()
@@ -2175,6 +2252,7 @@ charAddedConn = LP.CharacterAdded:Connect(function()
 			flyValue.Value = root.CFrame
 			captureBaselineTools()
 			armStartupStabilization("respawn")
+			isRespawning = false
 			releaseAutopilot("VIGILANDO LIBRE...", status)
 			refreshTargets(true)
 		end
@@ -2250,6 +2328,11 @@ mainLoopThread = task.spawn(function()
 			end
 
 			if not watchMode then
+				return
+			end
+
+			if isRespawning then
+				releaseAutopilot("RESPAWN DETECTADO - REARMANDO...", status)
 				return
 			end
 
