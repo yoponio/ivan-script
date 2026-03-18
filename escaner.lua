@@ -70,6 +70,7 @@ local backpackToolRemovedConn
 local characterDescendantAddedConn
 local promptConnections = {}
 local godTraceConnections = {}
+local hazardTouchConnections = {}
 local lastMovePosition = nil
 local lastMoveAt = 0
 local lastGuiSnapshot = ""
@@ -83,6 +84,8 @@ local nearbyPromptScanEnabled = false
 local lastGodHumanoidSnapshot = ""
 local lastGodRootSnapshot = ""
 local lastCharacterPartsSnapshot = ""
+local lastHazardSnapshot = ""
+local lastHazardTouchSignature = ""
 
 local sharedEnv = nil
 pcall(function()
@@ -110,6 +113,20 @@ local interestingKeywords = {
 	"cooldown",
 	"trial",
 	"wave",
+}
+
+local hazardKeywords = {
+	"wave",
+	"water",
+	"tsunami",
+	"acid",
+	"lava",
+	"kill",
+	"damage",
+	"dead",
+	"void",
+	"storm",
+	"flood",
 }
 
 local captureModes = {
@@ -158,6 +175,7 @@ local captureModeAllow = {
 		INV = true,
 		ERROR = true,
 		GOD = true,
+		HAZARD = true,
 	},
 }
 
@@ -535,6 +553,10 @@ local function clearPromptConnections()
 	end
 end
 
+local function clearHazardTouchConnections()
+	clearConnectionList(hazardTouchConnections)
+end
+
 local function serializeToolCounts(counts)
 	local parts = {}
 	for name, count in pairs(counts) do
@@ -601,6 +623,109 @@ local function getCharacterPartsSnapshot(character)
 		end
 	end
 	return string.format("parts=%d nocollide=%d notouch=%d anchored=%d", totalParts, nonCollideCount, nonTouchCount, anchoredCount)
+end
+
+local function containsKeyword(list, text)
+	if type(text) ~= "string" or text == "" then
+		return false, nil
+	end
+	local lowered = string.lower(text)
+	for _, keyword in ipairs(list) do
+		if lowered:find(keyword, 1, true) then
+			return true, keyword
+		end
+	end
+	return false, nil
+end
+
+local function isHazardPart(part)
+	if not part or not part:IsA("BasePart") then
+		return false, nil
+	end
+	local matched, keyword = containsKeyword(hazardKeywords, safeName(part) .. " | " .. safePath(part))
+	if matched then
+		return true, keyword
+	end
+	local materialName = ""
+	pcall(function()
+		materialName = part.Material.Name
+	end)
+	if materialName ~= "" then
+		matched, keyword = containsKeyword(hazardKeywords, materialName)
+		if matched then
+			return true, keyword
+		end
+	end
+	return false, nil
+end
+
+local function getNearbyHazardSnapshot(root)
+	if not root then
+		return ""
+	end
+	local overlapParams = OverlapParams.new()
+	overlapParams.FilterType = Enum.RaycastFilterType.Blacklist
+	overlapParams.FilterDescendantsInstances = {LP.Character}
+	overlapParams.MaxParts = 40
+	local ok, parts = pcall(function()
+		return workspace:GetPartBoundsInBox(root.CFrame, Vector3.new(18, 12, 18), overlapParams)
+	end)
+	if not ok or type(parts) ~= "table" then
+		return ""
+	end
+	local matches = {}
+	for _, part in ipairs(parts) do
+		local hazard, keyword = isHazardPart(part)
+		if hazard then
+			table.insert(matches, string.format("path=%s keyword=%s dist=%s", safePath(part), tostring(keyword or "unknown"), tostring(getDistanceToPlayer(part) and string.format("%.1f", getDistanceToPlayer(part)) or "nil")))
+		end
+	end
+	table.sort(matches)
+	if #matches > 6 then
+		while #matches > 6 do
+			table.remove(matches)
+		end
+	end
+	return table.concat(matches, " || ")
+end
+
+local function logHazardSnapshot(reason)
+	if captureMode ~= "GODTRACE" then
+		return
+	end
+	local snapshot = getNearbyHazardSnapshot(getRoot())
+	if snapshot ~= "" then
+		lastHazardSnapshot = snapshot
+		log("HAZARD", "NEAR", reason or "scan", snapshot)
+	else
+		log("HAZARD", "NEAR", reason or "scan", "sin hazards cercanos detectados")
+	end
+end
+
+local function attachHazardTouchHooks(character)
+	clearHazardTouchConnections()
+	if not character then
+		return
+	end
+	for _, descendant in ipairs(character:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			table.insert(hazardTouchConnections, descendant.Touched:Connect(function(otherPart)
+				if observerClosed or not observerEnabled or captureMode ~= "GODTRACE" then
+					return
+				end
+				local hazard, keyword = isHazardPart(otherPart)
+				if not hazard then
+					return
+				end
+				local signature = safePath(descendant) .. "->" .. safePath(otherPart)
+				if signature == lastHazardTouchSignature then
+					return
+				end
+				lastHazardTouchSignature = signature
+				log("HAZARD", "TOUCH", safeName(descendant), string.format("other=%s keyword=%s", safePath(otherPart), tostring(keyword or "unknown")))
+			end))
+		end
+	end
 end
 
 local function attachGodTracePropertyHook(instance, propertyName, category, action)
@@ -716,6 +841,12 @@ local function pollGodTraceSignals()
 			lastCharacterPartsSnapshot = partsSnapshot
 			log("GOD", "PARTS", safeName(character), partsSnapshot)
 		end
+	end
+
+	local hazardSnapshot = getNearbyHazardSnapshot(root)
+	if hazardSnapshot ~= "" and hazardSnapshot ~= lastHazardSnapshot then
+		lastHazardSnapshot = hazardSnapshot
+		log("HAZARD", "NEAR", "HumanoidRootPart", hazardSnapshot)
 	end
 end
 
@@ -1012,6 +1143,9 @@ local function bindCharacterHooks(character)
 		local delta = health - lastHealth
 		if math.abs(delta) >= 5 or health <= 0 then
 			log("HEALTH", "CHANGE", "Humanoid", string.format("hp=%.1f delta=%.1f max=%.1f", health, delta, humanoid.MaxHealth))
+			if captureMode == "GODTRACE" then
+				logHazardSnapshot(health <= 0 and "death" or "damage")
+			end
 		end
 		lastHealth = health
 	end)
@@ -1025,10 +1159,13 @@ local function bindCharacterHooks(character)
 
 	bindToolHooks(character)
 	attachGodTraceHooks(character, humanoid)
+	attachHazardTouchHooks(character)
 	lastMovePosition = nil
 	lastGodHumanoidSnapshot = ""
 	lastGodRootSnapshot = ""
 	lastCharacterPartsSnapshot = ""
+	lastHazardSnapshot = ""
+	lastHazardTouchSignature = ""
 	log("FLOW", "CHARACTER", safeName(character), safePath(character))
 	end
 
@@ -1371,6 +1508,7 @@ local function createUi()
 		backpackToolRemovedConn = disconnectConnection(backpackToolRemovedConn)
 		characterDescendantAddedConn = disconnectConnection(characterDescendantAddedConn)
 		clearConnectionList(godTraceConnections)
+		clearHazardTouchConnections()
 		clearPromptConnections()
 		if mainLoopThread then
 			pcall(function()
