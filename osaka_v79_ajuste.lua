@@ -1336,6 +1336,14 @@ local function getReturnWallWaypoint()
 	return Vector3.new(basePos.X, tunnelY, basePos.Z + (direction * returnWallOffset))
 end
 
+local function isNearBase()
+	local root = getRoot()
+	if not root or not basePos then
+		return false
+	end
+	return (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(basePos.X, 0, basePos.Z)).Magnitude <= 6
+end
+
 local function moveReturnStage(goal, status, recoveryText, runToken)
 	local reached = tweenTo(goal, runToken)
 	if reached and getGoalDistance(goal) <= returnGoalTolerance then
@@ -1624,7 +1632,6 @@ local function returnToBase(status, reasonText, runToken)
 	end
 
 	local healthBeforeSurface = humanoid.Health
-	local carryCountBeforeReturn = math.max(invCount, syncInventoryCountFromTools())
 	local wallWaypoint = getReturnWallWaypoint()
 	local tunnelStage = CFrame.new(basePos.X, basePos.Y + returnApproachDepth, basePos.Z)
 	local stageOne = CFrame.new(basePos.X, basePos.Y + returnSettleDepth, basePos.Z)
@@ -1645,57 +1652,8 @@ local function returnToBase(status, reasonText, runToken)
 	debugLog("RETURN_STAGE", "stageTwo")
 	moveReturnStage(stageTwo, status, "ACERCANDO AL DEPOSITO...", runToken)
 	task.wait(0.08)
-
-	local depositSucceeded = false
-	for attempt = 1, depositPeekAttempts do
-		if runToken ~= nil and not isOperationValid(runToken) then
-			debugLog("RETURN_ABORT", "operacion invalidada durante deposito")
-			isReturning = false
-			return false
-		end
-		local peekHealth = humanoid.Health
-		debugLog("DEPOSIT_ATTEMPT", "n=" .. tostring(attempt) .. " toolsAntes=" .. tostring(getFarmToolCount()))
-
-		-- Asomamos lo minimo posible para depositar y retrocedemos enseguida.
-		flyValue.Value = finalStage
-		task.wait(returnPeekTime)
-		flyValue.Value = stageTwo
-		root.AssemblyLinearVelocity = Vector3.zero
-		root.AssemblyAngularVelocity = Vector3.zero
-		task.wait(depositSettleTime)
-
-		local farmToolsAfterPeek = syncInventoryCountFromTools()
-		local tookDamage = humanoid.Health > 0 and humanoid.Health < peekHealth - returnDamageThreshold
-		debugLog(
-			"DEPOSIT_CHECK",
-			string.format("n=%d damage=%s toolsDespues=%d inv=%d", attempt, tostring(tookDamage), farmToolsAfterPeek, invCount)
-		)
-
-		if not tookDamage and farmToolTrackingReliable and farmToolsAfterPeek <= 0 then
-			depositSucceeded = true
-			debugLog("DEPOSIT_OK", "sin tools remanentes")
-			break
-		end
-
-		if not tookDamage and not farmToolTrackingReliable and attempt >= depositSafeConfirmAttempt then
-			depositSucceeded = true
-			debugLog("DEPOSIT_OK", "confirmacion de seguridad sin tracking")
-			break
-		end
-
-		if farmToolsAfterPeek > 0 then
-			forceUnequipFarmTools(humanoid)
-			syncInventoryCountFromTools()
-		end
-
-		status.Text = "REINTENTANDO DEPOSITO " .. tostring(attempt) .. "/" .. tostring(depositPeekAttempts)
-		flyValue.Value = stageOne
-		root.AssemblyLinearVelocity = Vector3.zero
-		root.AssemblyAngularVelocity = Vector3.zero
-		task.wait(0.14)
-		tweenTo(stageTwo, runToken)
-		task.wait(0.06)
-	end
+	debugLog("RETURN_STAGE", "homeStage")
+	moveReturnStage(finalStage, status, "LLEGANDO A HOME...", runToken)
 
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
@@ -1710,35 +1668,22 @@ local function returnToBase(status, reasonText, runToken)
 		task.wait(0.20)
 	end
 
-	if depositSucceeded then
-		invCount = 0
-		grabAttempts = 0
-		currentTarget = nil
-		blacklist = {}
-		captureBaselineTools()
-		refreshTargets(true)
-		returnLocked = false
-		status.Text = "DEPOSITO OK"
-		debugLog("RETURN_OK", "deposito confirmado")
-		if sessionGrabCount >= returnAt then
-			status.Text = "LIMITE TOTAL ALCANZADO"
-			debugLog("SESSION_LIMIT", "total=" .. tostring(sessionGrabCount) .. "/" .. tostring(returnAt))
-			stopFarm("LIMITE TOTAL ALCANZADO", mainButton, status, false)
-			isReturning = false
-			return true
-		end
+	grabAttempts = 0
+	currentTarget = nil
+	blacklist = {}
+	refreshTargets(true)
+	returnLocked = false
+	debugLog("RETURN_OK", isNearBase() and "home alcanzado" or "home aproximado")
+	if sessionGrabCount >= returnAt then
+		status.Text = "HOME | LIMITE ALCANZADO"
+		debugLog("SESSION_LIMIT", "total=" .. tostring(sessionGrabCount) .. "/" .. tostring(returnAt))
 	else
-		invCount = math.max(invCount, carryCountBeforeReturn)
-		status.Text = farmToolTrackingReliable and getFarmToolCount() > 0
-			and ("DEPOSITO BLOQUEADO: TOOL SIGUE EN MANO/MOCHILA (" .. tostring(getFarmToolCount()) .. ")")
-			or "DEPOSITO NO CONFIRMADO"
-		returnLocked = true
-		debugLog("RETURN_PENDING", "deposito no confirmado, reintento programado")
+		status.Text = "HOME | ESPERANDO"
 	end
 
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
-	releaseAutopilot(returnLocked and "ESPERANDO DEPOSITO..." or "VIGILANDO LIBRE...", status)
+	releaseAutopilot(status.Text, status)
 	isReturning = false
 	if mainButton then
 		updateButtonState(mainButton)
@@ -2289,12 +2234,12 @@ mainLoopThread = task.spawn(function()
 			updateReturnLimit()
 			local carryCount = getEffectiveCarryCount()
 			if sessionGrabCount >= returnAt then
-				debugLog("SESSION_LIMIT", "esperando deposito total=" .. tostring(sessionGrabCount) .. "/" .. tostring(returnAt))
-				if (carryCount > 0 or returnLocked) and not isReturning then
+				debugLog("SESSION_LIMIT", "esperando home total=" .. tostring(sessionGrabCount) .. "/" .. tostring(returnAt))
+				if not isNearBase() and (carryCount > 0 or returnLocked) and not isReturning then
 					returnLocked = true
-					returnToBase(status, "DEPOSITANDO LIMITE...", runToken)
+					returnToBase(status, "VOLVIENDO A HOME...", runToken)
 				else
-					stopFarm("LIMITE TOTAL ALCANZADO", mainButton, status, false)
+					releaseAutopilot("HOME | LIMITE ALCANZADO", status)
 				end
 				return
 			end
@@ -2315,11 +2260,11 @@ mainLoopThread = task.spawn(function()
 			if (returnLocked or carryCount >= returnAt) and not isReturning then
 				debugLog("LOOP_RETURN", "returnLocked=" .. tostring(returnLocked) .. " inv=" .. tostring(invCount) .. " carry=" .. tostring(carryCount))
 				if os.clock() - lastDepositAttempt < depositRetryCooldown then
-					releaseAutopilot("ESPERANDO DEPOSITO...", status)
+					releaseAutopilot("ESPERANDO REGRESO...", status)
 					return
 				end
 				returnLocked = true
-				returnToBase(status, "DEPOSITANDO...", runToken)
+				returnToBase(status, "VOLVIENDO A HOME...", runToken)
 				return
 			end
 
@@ -2402,7 +2347,7 @@ mainLoopThread = task.spawn(function()
 
 				if sessionGrabCount >= returnAt or returnLocked or invCount >= returnAt then
 					debugLog("RETURN_TRIGGER", "limite alcanzado")
-					returnToBase(status, "DEPOSITANDO...", runToken)
+					returnToBase(status, "VOLVIENDO A HOME...", runToken)
 				else
 					task.wait(0.12)
 				end
