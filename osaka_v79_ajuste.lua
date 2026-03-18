@@ -91,6 +91,7 @@ local mainButton = nil
 local towerButton = nil
 local shieldButton = nil
 local copyLogsButton = nil
+local eventScanButton = nil
 local shieldCFrame = nil
 local shieldBaseCFrame = nil
 local shieldRetreatOffset = 0
@@ -170,6 +171,131 @@ local filterOrder = {
 
 local function resolveRarityName(name)
 	return rarityAliases[name] or name
+end
+
+local stPatricKeywords = {
+	"st",
+	"patric",
+	"patrick",
+	"saint",
+	"clover",
+	"lepre",
+	"rainbow",
+	"luck",
+	"gold",
+	"coin",
+	"pot",
+	"cauld",
+	"olla",
+	"calder",
+	"deposit",
+	"deliver",
+	"turn in",
+	"submit",
+	"confirm",
+}
+
+local function containsKeyword(text)
+	if type(text) ~= "string" or text == "" then
+		return false, nil
+	end
+
+	local lowered = string.lower(text)
+	for _, keyword in ipairs(stPatricKeywords) do
+		if lowered:find(keyword, 1, true) then
+			return true, keyword
+		end
+	end
+
+	return false, nil
+end
+
+local function scanStPatricEvent(status)
+	if scriptClosed then
+		return
+	end
+
+	local matches = {}
+	for _, descendant in ipairs(workspace:GetDescendants()) do
+		local reasons = {}
+		local score = 0
+
+		local matchedName, nameKeyword = containsKeyword(descendant.Name)
+		if matchedName then
+			score = score + 2
+			table.insert(reasons, "name=" .. tostring(nameKeyword))
+		end
+
+		if descendant:IsA("ProximityPrompt") then
+			local matchedAction, actionKeyword = containsKeyword(descendant.ActionText)
+			if matchedAction then
+				score = score + 3
+				table.insert(reasons, "action=" .. tostring(actionKeyword))
+			end
+
+			local matchedObject, objectKeyword = containsKeyword(descendant.ObjectText)
+			if matchedObject then
+				score = score + 3
+				table.insert(reasons, "object=" .. tostring(objectKeyword))
+			end
+
+			local parent = descendant.Parent
+			if parent then
+				local matchedParent, parentKeyword = containsKeyword(parent.Name)
+				if matchedParent then
+					score = score + 2
+					table.insert(reasons, "parent=" .. tostring(parentKeyword))
+				end
+			end
+		end
+
+		if score > 0 then
+			table.insert(matches, {
+				node = descendant,
+				score = score,
+				reasons = table.concat(reasons, ","),
+			})
+		end
+	end
+
+	table.sort(matches, function(a, b)
+		if a.score ~= b.score then
+			return a.score > b.score
+		end
+		return a.node:GetFullName() < b.node:GetFullName()
+	end)
+
+	debugLog("EVENT_SCAN", "st_patric matches=" .. tostring(#matches))
+	local limit = math.min(#matches, 20)
+	for index = 1, limit do
+		local entry = matches[index]
+		local node = entry.node
+		local line = string.format(
+			"#%d score=%d type=%s path=%s",
+			index,
+			entry.score,
+			node.ClassName,
+			node:GetFullName()
+		)
+		if node:IsA("ProximityPrompt") then
+			line = line .. string.format(
+				" action=%s object=%s enabled=%s hold=%.2f max=%.1f",
+				tostring(node.ActionText),
+				tostring(node.ObjectText),
+				tostring(node.Enabled),
+				node.HoldDuration,
+				node.MaxActivationDistance
+			)
+		end
+		if entry.reasons ~= "" then
+			line = line .. " reasons=" .. entry.reasons
+		end
+		debugLog("EVENT_SCAN_HIT", line)
+	end
+
+	if status then
+		status.Text = #matches > 0 and ("SCAN STP OK: " .. tostring(limit) .. "/" .. tostring(#matches)) or "SCAN STP: SIN HITS"
+	end
 end
 
 local function updateCopyLogsButtonState()
@@ -1973,6 +2099,18 @@ copyLogsBtn.BorderSizePixel = 0
 Instance.new("UICorner", copyLogsBtn)
 copyLogsButton = copyLogsBtn
 
+local eventScanBtn = Instance.new("TextButton", panel)
+eventScanBtn.Size = UDim2.new(1, 0, 0, 24)
+eventScanBtn.Position = UDim2.new(0, 0, 0, 142)
+eventScanBtn.Text = "SCAN STP"
+eventScanBtn.TextColor3 = Color3.new(1, 1, 1)
+eventScanBtn.BackgroundColor3 = Color3.fromRGB(70, 110, 70)
+eventScanBtn.Font = Enum.Font.GothamBold
+eventScanBtn.TextSize = 11
+eventScanBtn.BorderSizePixel = 0
+Instance.new("UICorner", eventScanBtn)
+eventScanButton = eventScanBtn
+
 local scroll = Instance.new("ScrollingFrame", frame)
 scroll.Size = UDim2.new(1, -12, 0, 146)
 scroll.Position = UDim2.new(0, 6, 0, 184)
@@ -2054,6 +2192,7 @@ local function shutdownScript()
 	towerButton = nil
 	shieldButton = nil
 	copyLogsButton = nil
+	eventScanButton = nil
 
 	if sg then
 		sg:Destroy()
@@ -2073,9 +2212,9 @@ local function applyLayout()
 	if not expanded then
 		frame.Size = UDim2.new(0, 172, 0, 38)
 	elseif filtersExpanded then
-		frame.Size = UDim2.new(0, 172, 0, 336)
+		frame.Size = UDim2.new(0, 172, 0, 364)
 	else
-		frame.Size = UDim2.new(0, 172, 0, 184)
+		frame.Size = UDim2.new(0, 172, 0, 212)
 	end
 
 	scroll.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 8)
@@ -2147,6 +2286,13 @@ copyLogsBtn.MouseButton1Click:Connect(function()
 	end
 	copyLogsToClipboard(status)
 	updateCopyLogsButtonState()
+end)
+
+eventScanBtn.MouseButton1Click:Connect(function()
+	if scriptClosed then
+		return
+	end
+	scanStPatricEvent(status)
 end)
 
 for _, name in ipairs(filterOrder) do
