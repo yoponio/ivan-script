@@ -23,10 +23,11 @@ local characterAddedConn = nil
 local basePos = nil
 local depositPendingReset = false
 local lastDepositCount = 0
+local orbBlacklist = {}
 
 local instantMove = true
 local flySpeed = 420
-local safeDepth = -40
+local safeDepth = -60
 local settleTime = 0.03
 local orbTouchTime = 0.05
 local depositDistance = 6
@@ -35,11 +36,12 @@ local orbRefreshDelay = 0.02
 local depositTargetCount = 100
 local postTouchCountPolls = 10
 local postTouchCountPollDelay = 0.03
-local orbApproachHeight = -14
+local orbApproachHeight = -24
 local depositApproachHeight = 3.0
 local depositRetreatOffset = -30
 local orbRetreatOffset = -18
 local remoteTouchAttempts = 3
+local orbBlacklistSeconds = 8
 local maxStoredLogs = 250
 
 local storedLogs = {}
@@ -348,6 +350,24 @@ local function resolveOrbPart(model)
 	return nil
 end
 
+local function isBlacklisted(path)
+	local expiresAt = orbBlacklist[path]
+	if not expiresAt then
+		return false
+	end
+	if os.clock() >= expiresAt then
+		orbBlacklist[path] = nil
+		return false
+	end
+	return true
+end
+
+local function blacklistOrb(instance, reason)
+	local path = safePath(instance)
+	orbBlacklist[path] = os.clock() + orbBlacklistSeconds
+	debugLog("ORB_BLACKLIST", string.format("path=%s reason=%s", path, tostring(reason or "n/a")))
+end
+
 local function isOrbModel(instance)
 	local path = safePath(instance)
 	local name = safeName(instance)
@@ -370,6 +390,10 @@ local function getNearestOrb()
 	local bestDistance = math.huge
 	for _, descendant in ipairs(workspace:GetDescendants()) do
 		if safeIsA(descendant, "Model") and isOrbModel(descendant) then
+			local path = safePath(descendant)
+			if isBlacklisted(path) then
+				continue
+			end
 			local part = resolveOrbPart(descendant)
 			if part then
 				local distance = (root.Position - part.Position).Magnitude
@@ -380,6 +404,7 @@ local function getNearestOrb()
 				end
 			end
 		end
+		::continue::
 	end
 	return bestModel, bestPart, bestDistance
 end
@@ -569,6 +594,11 @@ local function collectOrbCycle()
 	debugLog("ORB_TOUCH", safePath(orbPart))
 	task.wait(orbTouchTime)
 	local refreshedCount = waitForHeldCountUpdate(heldCount)
+	if refreshedCount <= heldCount then
+		blacklistOrb(orbModel, "sin aumento de contador")
+		task.wait(orbRefreshDelay)
+		return
+	end
 	if refreshedCount >= depositTargetCount then
 		debugLog("ORB_CAP", string.format("held=%d/%d depositando ahora", refreshedCount, depositTargetCount))
 		depositOrbs()
