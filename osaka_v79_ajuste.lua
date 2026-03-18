@@ -436,6 +436,21 @@ local function getCompactStateLabel()
 	return "OFF"
 end
 
+local function logHealthState(tag, humanoid, previousHealth)
+	if not humanoid then
+		debugLog("HEALTH_TRACE", tostring(tag) .. " hp=nil")
+		return previousHealth
+	end
+
+	local currentHealth = humanoid.Health
+	local deltaText = ""
+	if type(previousHealth) == "number" then
+		deltaText = string.format(" delta=%.2f", currentHealth - previousHealth)
+	end
+	debugLog("HEALTH_TRACE", string.format("%s hp=%.2f%s", tostring(tag), currentHealth, deltaText))
+	return currentHealth
+end
+
 local function updateTowerButtonState()
 	if scriptClosed or not towerButton then
 		return
@@ -1638,6 +1653,7 @@ local function returnToBase(status, reasonText, runToken)
 		isReturning = false
 		return false
 	end
+	local trackedHealth = logHealthState("return_start", humanoid)
 
 	local wallWaypoint = getReturnWallWaypoint()
 	local tunnelStage = CFrame.new(basePos.X, basePos.Y + returnApproachDepth, basePos.Z)
@@ -1647,20 +1663,25 @@ local function returnToBase(status, reasonText, runToken)
 	if wallWaypoint then
 		debugLog("RETURN_STAGE", "wallWaypoint")
 		moveReturnTunnel(wallWaypoint, status, "PEGANDOSE A LA PARED...", runToken)
+		trackedHealth = logHealthState("after_wallWaypoint", humanoid, trackedHealth)
 	end
 
 	debugLog("RETURN_STAGE", "tunnelStage")
 	moveReturnStage(tunnelStage, status, "ENTRANDO POR ABAJO...", runToken)
+	trackedHealth = logHealthState("after_tunnelStage", humanoid, trackedHealth)
 	task.wait(0.08)
 	debugLog("RETURN_STAGE", "stageOne")
 	moveReturnStage(stageOne, status, "BAJANDO AL RETORNO...", runToken)
+	trackedHealth = logHealthState("after_stageOne", humanoid, trackedHealth)
 	task.wait(0.08)
 	debugLog("RETURN_STAGE", "stageTwo")
 	moveReturnStage(stageTwo, status, "LLEGANDO A HOME...", runToken)
+	trackedHealth = logHealthState("after_stageTwo", humanoid, trackedHealth)
 	task.wait(0.08)
 
 	status.Text = "DESCARGANDO EN HOME..."
 	local unequipped = forceUnequipFarmTools(humanoid)
+	trackedHealth = logHealthState("after_unequip", humanoid, trackedHealth)
 	task.wait(0.12)
 	captureBaselineTools()
 	invCount = 0
@@ -2334,6 +2355,10 @@ mainLoopThread = task.spawn(function()
 					task.wait(0.12)
 				end
 			else
+				local currentHumanoid = getHumanoid()
+				if currentHumanoid then
+					logHealthState("grab_fail", currentHumanoid)
+				end
 				grabAttempts = grabAttempts + 1
 				debugLog("GRAB_RESULT", "fail intento=" .. tostring(grabAttempts))
 				status.Text = "INTENTO " .. tostring(grabAttempts) .. "/3"
