@@ -71,6 +71,7 @@ local getDepositPrompt
 local registerOrbModel
 local unregisterOrbModel
 local isOrbModel
+local isOrbCandidate
 
 local function updateCopyLogsButton()
 	if copyLogsButton then
@@ -368,8 +369,18 @@ local function resolveOrbPart(model)
 	return nil
 end
 
+isOrbCandidate = function(instance)
+	if not instance then
+		return false
+	end
+	if safeIsA(instance, "Model") or safeIsA(instance, "Folder") or safeIsA(instance, "BasePart") then
+		return isOrbModel(instance)
+	end
+	return false
+end
+
 registerOrbModel = function(model)
-	if not safeIsA(model, "Model") or not isOrbModel(model) then
+	if not isOrbCandidate(model) then
 		return
 	end
 	orbRegistry[safePath(model)] = model
@@ -394,7 +405,7 @@ local function rebuildOrbRegistry()
 	for _, source in ipairs(sources) do
 		if source then
 			for _, descendant in ipairs(source:GetDescendants()) do
-				if safeIsA(descendant, "Model") then
+				if isOrbCandidate(descendant) then
 					registerOrbModel(descendant)
 				end
 			end
@@ -408,12 +419,12 @@ local function ensureOrbWatchers()
 	end
 	rebuildOrbRegistry()
 	orbAddedConn = workspace.DescendantAdded:Connect(function(descendant)
-		if safeIsA(descendant, "Model") then
+		if isOrbCandidate(descendant) then
 			registerOrbModel(descendant)
 		end
 	end)
 	orbRemovingConn = workspace.DescendantRemoving:Connect(function(descendant)
-		if safeIsA(descendant, "Model") then
+		if isOrbCandidate(descendant) then
 			unregisterOrbModel(descendant)
 		end
 	end)
@@ -460,10 +471,14 @@ local function getNearestOrb()
 	local bestModel = nil
 	local bestPart = nil
 	local bestDistance = math.huge
+	local registryCount = 0
+	local availableCount = 0
 	for path, model in pairs(orbRegistry) do
+		registryCount = registryCount + 1
 		if typeof(model) ~= "Instance" or model.Parent == nil then
 			orbRegistry[path] = nil
 		elseif not isBlacklisted(path) then
+			availableCount = availableCount + 1
 			local part = resolveOrbPart(model)
 			if part then
 				local distance = (root.Position - part.Position).Magnitude
@@ -478,8 +493,15 @@ local function getNearestOrb()
 		end
 	end
 	if not bestModel then
+		if availableCount == 0 and registryCount > 0 then
+			for path in pairs(orbBlacklist) do
+				orbBlacklist[path] = nil
+			end
+		end
 		rebuildOrbRegistry()
+		registryCount = 0
 		for path, model in pairs(orbRegistry) do
+			registryCount = registryCount + 1
 			if typeof(model) ~= "Instance" or model.Parent == nil then
 				orbRegistry[path] = nil
 			elseif not isBlacklisted(path) then
@@ -495,6 +517,9 @@ local function getNearestOrb()
 					orbRegistry[path] = nil
 				end
 			end
+		end
+		if not bestModel then
+			debugLog("ORB_REGISTRY", string.format("registry=%d blacklisted=%d", registryCount, next(orbBlacklist) and 1 or 0))
 		end
 	end
 	return bestModel, bestPart, bestDistance
