@@ -22,6 +22,7 @@ local MIN_TOTAL_SCORE = 42
 local VISITED_KEY = "phantom_hopper_visited_servers"
 local ACTIVE_KEY = "phantom_hopper_active"
 local SOURCE_FILE = "phantom_server_hopper.lua"
+local SOURCE_CACHE_KEY = "__phantom_hopper_source"
 
 local visitedServerIds = {}
 local stopRequested = false
@@ -38,6 +39,7 @@ local maxStoredLogs = 220
 local scanBatchSize = 250
 local runHopper
 local forceHopToNextServer
+local queuedSourceCache = nil
 
 local keywords = {
 	"ghost ship",
@@ -197,6 +199,43 @@ local function copyPayloadToClipboard(payload)
 		end
 	end
 	return false
+	end
+
+local function getGlobalEnv()
+	local ok, env = pcall(function()
+		return getgenv and getgenv()
+	end)
+	if ok and type(env) == "table" then
+		return env
+	end
+	return nil
+	end
+
+local function loadSelfSource()
+	if type(queuedSourceCache) == "string" and queuedSourceCache ~= "" then
+		return queuedSourceCache
+	end
+
+	local env = getGlobalEnv()
+	if env and type(env[SOURCE_CACHE_KEY]) == "string" and env[SOURCE_CACHE_KEY] ~= "" then
+		queuedSourceCache = env[SOURCE_CACHE_KEY]
+		return queuedSourceCache
+	end
+
+	if type(readfile) == "function" then
+		local ok, source = pcall(function()
+			return readfile(SOURCE_FILE)
+		end)
+		if ok and type(source) == "string" and source ~= "" then
+			queuedSourceCache = source
+			if env then
+				env[SOURCE_CACHE_KEY] = source
+			end
+			return queuedSourceCache
+		end
+	end
+
+	return nil
 	end
 
 local function safeIsA(instance, className)
@@ -606,6 +645,7 @@ local function getQueueOnTeleport()
 		queue_on_teleport,
 		syn and syn.queue_on_teleport,
 		queueonteleport,
+		queueteleport,
 		fluxus and fluxus.queue_on_teleport,
 	}
 	for _, candidate in ipairs(candidates) do
@@ -622,6 +662,19 @@ local function queueSelfOnTeleport()
 		log("QUEUE_WARN", "sin queue_on_teleport; no puedo continuar tras teleport")
 		return false
 	end
+
+	local selfSource = loadSelfSource()
+	if type(selfSource) == "string" and selfSource ~= "" then
+		local ok, err = pcall(function()
+			queueFn(selfSource)
+		end)
+		if ok then
+			log("QUEUE_OK", "script completo encolado para el siguiente servidor")
+			return true
+		end
+		log("QUEUE_FAIL", "no se pudo encolar el script completo: " .. tostring(err))
+	end
+
 	local payload = string.format([[task.spawn(function()
 	local ok, source = pcall(function()
 		return readfile(%q)
@@ -630,8 +683,15 @@ local function queueSelfOnTeleport()
 		loadstring(source)()
 	end
 end)]], SOURCE_FILE)
-	queueFn(payload)
-	return true
+	local ok, err = pcall(function()
+		queueFn(payload)
+	end)
+	if ok then
+		log("QUEUE_FALLBACK", "se encolo loader por readfile como respaldo")
+		return true
+	end
+	log("QUEUE_FAIL", "fallo tambien el respaldo: " .. tostring(err))
+	return false
 	end
 
 local function loadVisitedServerIds()
@@ -810,6 +870,7 @@ runHopper = function()
 
 buildUi()
 loadVisitedServerIds()
+loadSelfSource()
 log("BOOT", string.format("version=%s placeId=%s jobId=%s", VERSION, tostring(PLACE_ID), tostring(CURRENT_JOB_ID)))
 log("TIP", "deja el script corriendo; se queda cuando detecta phantom y copia el JobId")
 safeNotify("Phantom Hopper", "Escaneando servidor actual...")
