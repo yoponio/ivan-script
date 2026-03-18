@@ -2933,7 +2933,7 @@ local status
 local limitValue
 local updateReturnLimit
 
-do
+local function buildStPatricUi()
 	local guiParent = pcall(function()
 		return gethui()
 	end) and gethui() or game:GetService("CoreGui")
@@ -2943,7 +2943,8 @@ do
 		oldGui:Destroy()
 	end
 
-	sg = Instance.new("ScreenGui")
+	local createdScreenGui = Instance.new("ScreenGui")
+	sg = createdScreenGui
 	sg.Name = "OsakaV79Fix"
 	sg.ResetOnSpawn = false
 	sg.Parent = guiParent
@@ -3310,6 +3311,8 @@ do
 	updateShieldButtonState()
 	updateCopyLogsButtonState()
 end
+
+buildStPatricUi()
 
 steppedConn = RS.Stepped:Connect(function()
 	if scriptClosed then
