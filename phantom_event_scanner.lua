@@ -11,6 +11,11 @@ local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 
 local LP = Players.LocalPlayer
+local taskWait = task and task.wait or wait
+local taskSpawn = task and task.spawn or function(callback)
+	coroutine.wrap(callback)()
+end
+local zeroVector = Vector3.zero or Vector3.new(0, 0, 0)
 
 local autoFarm = false
 local scriptClosed = false
@@ -234,8 +239,8 @@ local function snapTo(goal)
 			root.CFrame = goal
 		end
 	end)
-	root.AssemblyLinearVelocity = Vector3.zero
-	root.AssemblyAngularVelocity = Vector3.zero
+	root.AssemblyLinearVelocity = zeroVector
+	root.AssemblyAngularVelocity = zeroVector
 	return true
 end
 
@@ -251,11 +256,11 @@ local function safeTravel(targetPos, finalYOffset, forcedSafeY)
 	if not snapTo(stage1) then
 		return false
 	end
-	task.wait()
+	taskWait()
 	if not snapTo(stage2) then
 		return false
 	end
-	task.wait()
+	taskWait()
 	return snapTo(stage3)
 end
 
@@ -283,8 +288,8 @@ local function startMovementAssist()
 		if autoFarm then
 			setCollision(false)
 			rootPart.CFrame = flyValue.Value
-			rootPart.AssemblyLinearVelocity = Vector3.zero
-			rootPart.AssemblyAngularVelocity = Vector3.zero
+			rootPart.AssemblyLinearVelocity = zeroVector
+			rootPart.AssemblyAngularVelocity = zeroVector
 		end
 	end)
 end
@@ -322,7 +327,7 @@ local function moveTo(targetCFrame, speed)
 		connection:Disconnect()
 	end)
 	while autoFarm and getRoot() == root and not completed do
-		task.wait()
+		taskWait()
 	end
 	stopTween()
 	return autoFarm
@@ -466,7 +471,7 @@ local function waitForHeldCountUpdate(previousCount)
 		if heldCount >= depositTargetCount then
 			return heldCount, prompt
 		end
-		task.wait(postTouchCountPollDelay)
+		taskWait(postTouchCountPollDelay)
 	end
 	return bestCount, bestPrompt
 end
@@ -485,7 +490,7 @@ local function firePrompt(prompt)
 	end
 	local ok = pcall(function()
 		prompt:InputHoldBegin()
-		task.wait((prompt.HoldDuration or 0) + 0.1)
+		taskWait((prompt.HoldDuration or 0) + 0.1)
 		prompt:InputHoldEnd()
 	end)
 	return ok
@@ -496,14 +501,14 @@ local function tryTouch(part)
 	if not root or not part then
 		return false
 	end
-	root.AssemblyLinearVelocity = Vector3.zero
-	root.AssemblyAngularVelocity = Vector3.zero
+	root.AssemblyLinearVelocity = zeroVector
+	root.AssemblyAngularVelocity = zeroVector
 	safeTravel(part.Position, orbApproachHeight)
 	if type(firetouchinterest) == "function" then
 		for _ = 1, remoteTouchAttempts do
 			pcall(function()
 				firetouchinterest(root, part, 0)
-				task.wait()
+				taskWait()
 				firetouchinterest(root, part, 1)
 			end)
 		end
@@ -511,7 +516,7 @@ local function tryTouch(part)
 		root.CFrame = part.CFrame + Vector3.new(0, orbApproachHeight, 0)
 	end
 	retreatUnderPosition(part.Position, orbRetreatOffset)
-	task.wait(orbTouchTime)
+	taskWait(orbTouchTime)
 	return true
 end
 
@@ -548,7 +553,7 @@ local function depositOrbs()
 	if standCFrame and not moveTo(standCFrame, flySpeed) then
 		return false
 	end
-	task.wait(settleTime)
+	taskWait(settleTime)
 	local ok = firePrompt(prompt)
 	if ok then
 		depositPendingReset = true
@@ -567,20 +572,20 @@ end
 local function collectOrbCycle()
 	if depositPendingReset then
 		if not isDepositResetComplete() then
-			task.wait(promptRetryDelay)
+			taskWait(promptRetryDelay)
 			return
 		end
 	end
 	local heldCount = getHeldOrbCount()
 	if heldCount >= depositTargetCount then
 		depositOrbs()
-		task.wait(promptRetryDelay)
+		taskWait(promptRetryDelay)
 		return
 	end
 	local orbModel, orbPart, distance = getNearestOrb()
 	if not orbModel or not orbPart then
 		debugLog("ORB_WAIT", string.format("sin orbes phantom held=%d/%d", heldCount, depositTargetCount))
-		task.wait(orbRefreshDelay)
+		taskWait(orbRefreshDelay)
 		return
 	end
 	debugLog("ORB_TARGET", string.format("held=%d/%d dist=%.1f path=%s", heldCount, depositTargetCount, distance, safePath(orbModel)))
@@ -588,20 +593,20 @@ local function collectOrbCycle()
 	if not moveTo(approach, flySpeed) then
 		return
 	end
-	task.wait(settleTime)
+	taskWait(settleTime)
 	tryTouch(orbPart)
 	debugLog("ORB_TOUCH", safePath(orbPart))
-	task.wait(orbTouchTime)
+	taskWait(orbTouchTime)
 	local refreshedCount = waitForHeldCountUpdate(heldCount)
 	if refreshedCount <= heldCount then
 		blacklistOrb(orbModel, "sin aumento de contador")
-		task.wait(orbRefreshDelay)
+		taskWait(orbRefreshDelay)
 		return
 	end
 	if refreshedCount >= depositTargetCount then
 		debugLog("ORB_CAP", string.format("held=%d/%d depositando ahora", refreshedCount, depositTargetCount))
 		depositOrbs()
-		task.wait(promptRetryDelay)
+		taskWait(promptRetryDelay)
 		return
 	end
 end
@@ -612,7 +617,7 @@ local function mainLoop()
 		local root = getRoot()
 		if not humanoid or humanoid.Health <= 0 or not root then
 			debugLog("WAIT", "esperando character")
-			task.wait(0.5)
+			taskWait(0.5)
 		else
 			collectOrbCycle()
 		end
@@ -650,7 +655,7 @@ end
 
 local function onCharacterAdded(character)
 	debugLog("RESPAWN", safePath(character))
-	task.wait(1)
+	taskWait(1)
 	local root = getRoot()
 	if root then
 		flyValue.Value = root.CFrame
