@@ -1,30 +1,14 @@
-local function __tsunami_main()
-
-local scriptVersion = "tower-tsunami-dedicated-r1"
-
-local function safeGetService(serviceName)
-	local service = nil
-	pcall(function()
-		local getter = game and game.GetService
-		if type(getter) == "function" then
-			service = getter(game, serviceName)
-		end
-	end)
-	if service then
-		return service
-	end
-	pcall(function()
-		service = game[serviceName]
-	end)
-	return service
+if not game:IsLoaded() then
+	game.Loaded:Wait()
 end
 
-local Players = safeGetService("Players")
-local TS = safeGetService("TweenService")
-local RS = safeGetService("RunService")
-if not Players or not TS or not RS then
-	return
-end
+local scriptVersion = "stpatric-dedicated-r1"
+
+print("--- INICIANDO OSAKA " .. scriptVersion .. " (ST PATRIC DEDICADO) ---")
+
+local Players = game:GetService("Players")
+local TS = game:GetService("TweenService")
+local RS = game:GetService("RunService")
 
 local LP = Players.LocalPlayer
 
@@ -37,13 +21,15 @@ local scriptClosed = false
 local towerPriorityMode = false
 local eventShieldMode = false
 local isRespawning = false
+local stPatricChestPhase = false
 
 local farmSpeed = 500
 local firstTripSpeed = 220
 local startupStabilizeTime = 0.45
 local safeDepth = -6.5
 local depositRise = 0.08
-local returnAt = 20
+local stPatricMaxCarry = 6
+local returnAt = stPatricMaxCarry
 local returnApproachDepth = -8.5
 local returnSettleDepth = -4.0
 local returnHoverDepth = -1.6
@@ -66,23 +52,12 @@ local shieldRecoverStep = 0.08
 local shieldRecoverInterval = 0.30
 local shieldRecoverDelayAfterHit = 0.80
 local shieldExitStabilizeTime = 0.18
-local stPatricSubmitCooldown = 300
+local stPatricSubmitCooldown = 1.25
 local stPatricLastSubmitAttempt = 0
 local stPatricPromptHeightOffset = -4.5
-local tsunamiMinSubmitCount = 3
-local tsunamiRewardPickupDuration = 14
-
-local sharedEnv = nil
-pcall(function()
-	sharedEnv = type(getgenv) == "function" and getgenv() or _G
-end)
-if type(sharedEnv) ~= "table" then
-	sharedEnv = _G
-end
-sharedEnv.TowerTsunamiState = sharedEnv.TowerTsunamiState or {}
-local tsunamiSharedState = sharedEnv.TowerTsunamiState
-local tsunamiRewardPickupUntil = 0
-local tsunamiLastPromptPosition = nil
+local stPatricChestTriggerCooldown = 0.75
+local stPatricLastChestTrigger = 0
+local stPatricChestPhaseMinPrompts = 6
 
 local invCount = 0
 local basePos = nil
@@ -206,29 +181,38 @@ local function resolveRarityName(name)
 	return rarityAliases[name] or name
 end
 
-local getStPatricTargets
-
 local stPatricKeywords = {
-	"tower",
-	"tsunami",
-	"snakewave",
-	"tsunamiwave",
-	"towertrialhud",
-	"trialbar",
-	"deposits",
-	"brainrot",
-	"brainrots",
-	"claim",
-	"redeem",
-	"reward",
-	"prize",
+	"st",
+	"patric",
+	"patrick",
+	"saint",
+	"clover",
+	"rainbow",
+	"gold",
+	"pot",
+	"cauld",
+	"olla",
 	"submit",
 	"deliver",
-	"deposit",
-	"exchange",
-	"altar",
-	"collector",
+	"build",
+	"brainrot",
 	"yes",
+}
+
+local stPatricChestKeywords = {
+	"chest",
+	"cofre",
+	"crate",
+	"reward",
+	"prize",
+	"loot",
+	"claim",
+	"open",
+	"unlock",
+	"rainbow",
+	"end",
+	"finish",
+	"final",
 }
 
 local function containsKeyword(text)
@@ -238,6 +222,21 @@ local function containsKeyword(text)
 
 	local lowered = string.lower(text)
 	for _, keyword in ipairs(stPatricKeywords) do
+		if lowered:find(keyword, 1, true) then
+			return true, keyword
+		end
+	end
+
+	return false, nil
+end
+
+local function containsChestKeyword(text)
+	if type(text) ~= "string" or text == "" then
+		return false, nil
+	end
+
+	local lowered = string.lower(text)
+	for _, keyword in ipairs(stPatricChestKeywords) do
 		if lowered:find(keyword, 1, true) then
 			return true, keyword
 		end
@@ -387,132 +386,6 @@ local function getGuiTextMatchScore(text)
 	return 0
 end
 
-local function getTsunamiCooldownRemaining()
-	return math.max(0, stPatricSubmitCooldown - (os.clock() - stPatricLastSubmitAttempt))
-end
-
-local function getTsunamiCooldownStatus(prefix)
-	local remaining = math.ceil(getTsunamiCooldownRemaining())
-	if remaining <= 0 then
-		return tostring(prefix or "TSUNAMI") .. ": LISTO"
-	end
-	return string.format("%s: COOLDOWN %ds", tostring(prefix or "TSUNAMI"), remaining)
-end
-
-local function updateTsunamiSharedState(fields)
-	if type(tsunamiSharedState) ~= "table" or type(fields) ~= "table" then
-		return
-	end
-	for key, value in pairs(fields) do
-		tsunamiSharedState[key] = value
-	end
-end
-
-local function isTsunamiReadyGateEnabled()
-	return type(tsunamiSharedState) == "table" and tsunamiSharedState.useReadyGate == true
-end
-
-local function getInternalTsunamiReadySignal()
-	local activeTsunamis = workspace:FindFirstChild("ActiveTsunamis")
-	if activeTsunamis then
-		for _, descendant in ipairs(activeTsunamis:GetDescendants()) do
-			local path = string.lower(safeInstancePath(descendant))
-			if path:find("snakewave", 1, true) or path:find("tsunamiwave", 1, true) or path:find("tsunami", 1, true) then
-				return true, "world_active_tsunamis", safeInstancePath(descendant)
-			end
-		end
-	end
-
-	local snakeWaveVisual = workspace:FindFirstChild("SnakeWave_Visual")
-	if snakeWaveVisual then
-		for _, descendant in ipairs(snakeWaveVisual:GetDescendants()) do
-			local path = string.lower(safeInstancePath(descendant))
-			if path:find("tsunamiwave", 1, true) or path:find("snakewave", 1, true) then
-				return true, "world_snakewave_visual", safeInstancePath(descendant)
-			end
-		end
-	end
-
-	local playerGui = LP and LP:FindFirstChildOfClass("PlayerGui")
-	if playerGui then
-		local towerHud = playerGui:FindFirstChild("TowerTrialHUD", true)
-			or playerGui:FindFirstChild("TrialBar", true)
-		if towerHud then
-			local deposits = towerHud:FindFirstChild("Deposits", true)
-			if deposits then
-				return true, "gui_deposits", safeInstancePath(deposits)
-			end
-			return true, "gui_tower_hud", safeInstancePath(towerHud)
-		end
-	end
-
-	return false, nil, nil
-end
-
-local function getEffectiveTsunamiReadyState()
-	local internalReady, internalReason, internalPath = getInternalTsunamiReadySignal()
-	if internalReady then
-		updateTsunamiSharedState({
-			ready = true,
-			lastSource = "internal",
-			lastReason = internalReason,
-			bestPath = internalPath,
-			lastSeenAt = os.clock(),
-		})
-		return true, internalReason, internalPath
-	end
-
-	if type(tsunamiSharedState) == "table" and tsunamiSharedState.ready == true then
-		return true, tsunamiSharedState.lastReason or "shared_ready", tsunamiSharedState.bestPath
-	end
-
-	return false, nil, nil
-end
-
-local function isTsunamiRewardPickupActive()
-	return os.clock() < tsunamiRewardPickupUntil
-end
-
-local function getTsunamiRewardPickupRemaining()
-	return math.max(0, tsunamiRewardPickupUntil - os.clock())
-end
-
-local function getTsunamiRewardTarget()
-	local targets = getStPatricTargets()
-	if #targets == 0 then
-		return nil, 0
-	end
-	if not tsunamiLastPromptPosition then
-		return targets[1], #targets
-	end
-
-	local nearby = {}
-	for _, target in ipairs(targets) do
-		local position = getTargetPosition(target)
-		if position and (position - tsunamiLastPromptPosition).Magnitude <= 140 then
-			table.insert(nearby, target)
-		end
-	end
-
-	if #nearby == 0 then
-		return nil, 0
-	end
-
-	table.sort(nearby, function(a, b)
-		local pa = getTargetPosition(a)
-		local pb = getTargetPosition(b)
-		if not pa then
-			return false
-		end
-		if not pb then
-			return true
-		end
-		return (pa - tsunamiLastPromptPosition).Magnitude < (pb - tsunamiLastPromptPosition).Magnitude
-	end)
-
-	return nearby[1], #nearby
-end
-
 local function getStPatricDialogContextScore(root)
 	if not root then
 		return 0
@@ -522,24 +395,43 @@ local function getStPatricDialogContextScore(root)
 	for _, descendant in ipairs(root:GetDescendants()) do
 		if safeIsA(descendant, "TextLabel") or safeIsA(descendant, "TextButton") then
 			local content = string.lower(safeText(descendant))
-			if content:find("tower tsunami", 1, true) then
-				score = score + 10
-			elseif content:find("deposits", 1, true) or content:find("trialbar", 1, true) or content:find("towertrialhud", 1, true) then
-				score = score + 9
-			elseif content:find("claim reward", 1, true) or content:find("redeem reward", 1, true) then
-				score = score + 9
-			elseif content:find("submit brainrots", 1, true) or content:find("deliver brainrots", 1, true) then
+			if content:find("submit brainrots", 1, true) then
 				score = score + 8
-			elseif content:find("snakewave", 1, true) or content:find("tsunamiwave", 1, true) then
-				score = score + 8
-			elseif content:find("minimum 3", 1, true) or content:find("3 brainrots", 1, true) then
+			elseif content:find("build the rainbow", 1, true) then
 				score = score + 7
-			elseif content:find("reward", 1, true) or content:find("claim", 1, true) then
-				score = score + 6
 			elseif content:find("brainrot", 1, true) then
 				score = score + 4
-			elseif content:find("tsunami", 1, true) or content:find("tower", 1, true) then
+			elseif content:find("gone forever", 1, true) then
+				score = score + 4
+			elseif content:find("rainbow", 1, true) or content:find("gold", 1, true) then
 				score = score + 3
+			end
+		end
+	end
+
+	return score
+end
+
+local function getStPatricCompletionGuiScore()
+	local playerGui = LP:FindFirstChildOfClass("PlayerGui")
+	if not playerGui then
+		return 0
+	end
+
+	local score = 0
+	for _, descendant in ipairs(playerGui:GetDescendants()) do
+		if (safeIsA(descendant, "TextLabel") or safeIsA(descendant, "TextButton")) and safeGuiVisible(descendant) then
+			local content = string.lower(safeText(descendant))
+			if content:find("gone forever", 1, true) then
+				score = score + 10
+			elseif content:find("open", 1, true) and (content:find("chest", 1, true) or content:find("crate", 1, true) or content:find("reward", 1, true)) then
+				score = score + 8
+			elseif content:find("claim", 1, true) and (content:find("reward", 1, true) or content:find("chest", 1, true) or content:find("loot", 1, true)) then
+				score = score + 8
+			elseif content:find("reward", 1, true) or content:find("chest", 1, true) or content:find("crate", 1, true) then
+				score = score + 4
+			elseif content:find("build the rainbow", 1, true) or content:find("submit brainrots", 1, true) then
+				score = score - 3
 			end
 		end
 	end
@@ -1012,6 +904,7 @@ local function resetRunState()
 	isReturning = false
 	isGrabbing = false
 	returnLocked = false
+	stPatricLastChestTrigger = 0
 end
 
 local function resetSessionProgress()
@@ -2344,7 +2237,7 @@ local function returnToBase(status, reasonText, runToken)
 	return true
 end
 
-getStPatricTargets = function()
+local function getStPatricTargets()
 	local results = {}
 	local brainrots = workspace:FindFirstChild("ActiveBrainrots")
 	local containers = brainrots and {brainrots} or {workspace}
@@ -2458,13 +2351,9 @@ local function scoreStPatricPrompt(prompt)
 		local matched, keyword = containsKeyword(text)
 		if matched then
 			score = score + 2
-			if keyword == "deposits" or keyword == "towertrialhud" or keyword == "trialbar" then
-				score = score + 6
-			if keyword == "claim" or keyword == "redeem" or keyword == "reward" or keyword == "prize" then
-				score = score + 5
-			elseif keyword == "submit" or keyword == "deliver" or keyword == "deposit" or keyword == "exchange" then
+			if keyword == "submit" or keyword == "deliver" or keyword == "build" then
 				score = score + 4
-			elseif keyword == "tower" or keyword == "tsunami" or keyword == "snakewave" or keyword == "tsunamiwave" or keyword == "altar" or keyword == "collector" then
+			elseif keyword == "pot" or keyword == "cauld" or keyword == "gold" or keyword == "rainbow" then
 				score = score + 3
 			end
 		end
@@ -2488,12 +2377,151 @@ local function findStPatricSubmitPrompt()
 	end
 
 	if bestPrompt then
-		debugLog("STP_TOWER", "prompt=" .. safeInstancePath(bestPrompt) .. " score=" .. tostring(bestScore))
+		debugLog("STP_POT", "prompt=" .. safeInstancePath(bestPrompt) .. " score=" .. tostring(bestScore))
 	else
-		debugLog("STP_TOWER", "sin prompt de tower tsunami")
+		debugLog("STP_POT", "sin prompt de olla")
 	end
 
 	return bestPrompt, bestScore
+end
+
+local function scoreStPatricChestPrompt(prompt)
+	if not prompt or not safeIsA(prompt, "ProximityPrompt") then
+		return 0
+	end
+
+	local promptData = safePromptData(prompt)
+	local parent = safeParent(prompt)
+	local texts = {
+		safeName(prompt),
+		safeInstancePath(prompt),
+		promptData.actionText,
+		promptData.objectText,
+		safeName(parent),
+		safeInstancePath(parent),
+	}
+	local score = 0
+
+	for _, text in ipairs(texts) do
+		local matched, keyword = containsChestKeyword(text)
+		if matched then
+			score = score + 3
+			if keyword == "chest" or keyword == "cofre" or keyword == "crate" then
+				score = score + 6
+			elseif keyword == "open" or keyword == "claim" or keyword == "unlock" then
+				score = score + 5
+			elseif keyword == "reward" or keyword == "prize" or keyword == "loot" then
+				score = score + 4
+			end
+		end
+	end
+
+	return score
+end
+
+local function getStPatricChestPrompts()
+	local prompts = {}
+	local root = getRoot()
+	for _, descendant in ipairs(workspace:GetDescendants()) do
+		if safeIsA(descendant, "ProximityPrompt") then
+			local score = scoreStPatricChestPrompt(descendant)
+			if score > 0 then
+				local position = getWorldPositionFromInstance(descendant)
+				local distance = root and position and (root.Position - position).Magnitude or math.huge
+				table.insert(prompts, {
+					prompt = descendant,
+					score = score,
+					position = position,
+					distance = distance,
+				})
+			end
+		end
+	end
+
+	table.sort(prompts, function(a, b)
+		if a.score ~= b.score then
+			return a.score > b.score
+		end
+		return a.distance < b.distance
+	end)
+
+	return prompts
+end
+
+local function detectStPatricChestPhase()
+	local prompts = getStPatricChestPrompts()
+	if #prompts == 0 then
+		return false, 0, "no_chests"
+	end
+
+	local completionGuiScore = getStPatricCompletionGuiScore()
+	if #prompts >= stPatricChestPhaseMinPrompts and completionGuiScore > 0 then
+		return true, #prompts, "chests_plus_gui"
+	end
+
+	local potPrompt, potScore = findStPatricSubmitPrompt()
+	if not potPrompt or potScore <= 0 then
+		return true, #prompts, "pot_gone"
+	end
+
+	return false, #prompts, "pot_still_active_gui=" .. tostring(completionGuiScore)
+end
+
+local function triggerStPatricChestPrompt(status, runToken)
+	if os.clock() - stPatricLastChestTrigger < stPatricChestTriggerCooldown then
+		return false
+	end
+
+	local prompts = getStPatricChestPrompts()
+	if #prompts == 0 then
+		debugLog("STP_CHEST_NONE", "sin cofres detectados")
+		return false
+	end
+
+	local entry = prompts[1]
+	local prompt = entry.prompt
+	stPatricLastChestTrigger = os.clock()
+	debugLog(
+		"STP_CHEST_PROMPT",
+		string.format("score=%d dist=%.2f path=%s", entry.score, entry.distance, safeInstancePath(prompt))
+	)
+
+	if entry.position and not approachStPatricPrompt(entry.position, runToken) then
+		debugLog("STP_CHEST_ABORT", "no se pudo acercar al cofre")
+		return false
+	end
+
+	pcall(function()
+		prompt.RequiresLineOfSight = false
+		prompt.MaxActivationDistance = 100
+		prompt.HoldDuration = 0
+	end)
+
+	local fireOk, fireErr = pcall(function()
+		fireproximityprompt(prompt)
+	end)
+	debugLog(
+		"STP_CHEST_TRIGGER",
+		"prompt=" .. safeInstancePath(prompt) .. " ok=" .. tostring(fireOk) .. (fireErr and (" err=" .. tostring(fireErr)) or "")
+	)
+	if status then
+		status.Text = "STP: ABRIENDO COFRE..."
+	end
+	return fireOk
+end
+
+local function detectStPatricEventContext()
+	local potPrompt, potScore = findStPatricSubmitPrompt()
+	if potPrompt and potScore > 0 then
+		return true, "pot_prompt", potScore
+	end
+
+	local chestPrompts = getStPatricChestPrompts()
+	if #chestPrompts > 0 then
+		return true, "chest_phase", chestPrompts[1].score
+	end
+
+	return false, "no_markers", 0
 end
 
 scoreYesButton = function(button)
@@ -2617,7 +2645,7 @@ local function confirmStPatricDialog(status)
 			local ok = activateStPatricYesButton(yesButton)
 			debugLog("STP_CONFIRM", "button=" .. safeInstancePath(yesButton) .. " score=" .. tostring(score) .. " ok=" .. tostring(ok))
 			if status then
-				status.Text = ok and "TSUNAMI: CONFIRMANDO..." or "TSUNAMI: YES DETECTADO"
+				status.Text = ok and "STP: CONFIRMANDO..." or "STP: YES DETECTADO"
 			end
 			return ok
 		end
@@ -2642,15 +2670,6 @@ local function getRootPositionSummary()
 end
 
 local function finalizeStPatricSubmit(status, carryBefore, toolsBefore, toolsNow, reason)
-	stPatricLastSubmitAttempt = os.clock()
-	tsunamiRewardPickupUntil = os.clock() + tsunamiRewardPickupDuration
-	updateTsunamiSharedState({
-		ready = false,
-		cooldownUntil = os.clock() + stPatricSubmitCooldown,
-		lastClaimAt = os.clock(),
-		lastClaimReason = reason,
-		lastClaimPosition = tsunamiLastPromptPosition,
-	})
 	debugLog(
 		"STP_SUBMIT_FINALIZE",
 		string.format(
@@ -2672,12 +2691,21 @@ local function finalizeStPatricSubmit(status, carryBefore, toolsBefore, toolsNow
 	returnLocked = false
 	isReturning = false
 	refreshTargets(true)
-	status.Text = "TSUNAMI: PREMIO OK"
+	status.Text = "STP: ENTREGA OK"
 	debugLog(
 		"STP_SUBMIT_OK",
 		"reason=" .. tostring(reason) .. " carry_before=" .. tostring(carryBefore) .. " tools_before=" .. tostring(toolsBefore) .. " tools_now=" .. tostring(toolsNow)
 	)
-	releaseAutopilot("TSUNAMI: RECOGIENDO DROP FINAL...", status)
+	task.wait(0.35)
+	local chestPhaseReady, chestPromptCount, chestReason = detectStPatricChestPhase()
+	debugLog("STP_CHEST_CHECK", "prompts=" .. tostring(chestPromptCount) .. " threshold=" .. tostring(stPatricChestPhaseMinPrompts) .. " reason=" .. tostring(chestReason))
+	if chestPhaseReady then
+		stPatricChestPhase = true
+		debugLog("STP_CHEST_PHASE_ON", "cofres detectados=" .. tostring(chestPromptCount) .. " reason=" .. tostring(chestReason))
+		releaseAutopilot("STP: COFRES DESBLOQUEADOS", status)
+		return true
+	end
+	releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
 	return true
 end
 
@@ -2686,8 +2714,8 @@ local function submitStPatricLoad(status, runToken)
 		debugLog("STP_SUBMIT_ABORT", "operacion invalidada antes de entregar")
 		return false
 	end
-	if getTsunamiCooldownRemaining() > 0 then
-		releaseAutopilot(getTsunamiCooldownStatus("TSUNAMI"), status)
+	if os.clock() - stPatricLastSubmitAttempt < stPatricSubmitCooldown then
+		releaseAutopilot("STP: ESPERANDO OLLA...", status)
 		return false
 	end
 
@@ -2700,32 +2728,35 @@ local function submitStPatricLoad(status, runToken)
 			invCount,
 			tostring(returnLocked),
 			tostring(isReturning),
-			getTsunamiCooldownRemaining(),
+			math.max(0, stPatricSubmitCooldown - (os.clock() - stPatricLastSubmitAttempt)),
 			getRootPositionSummary()
 		)
 	)
-	if carryCount < tsunamiMinSubmitCount then
-		debugLog("STP_SUBMIT_SKIP", "carga insuficiente para reclamar carry=" .. tostring(carryCount))
+	if carryCount <= 0 then
+		debugLog("STP_SUBMIT_SKIP", "sin carga para entregar")
+		invCount = 0
 		returnLocked = false
 		isReturning = false
-		releaseAutopilot("TSUNAMI: MIN " .. tostring(tsunamiMinSubmitCount) .. " PARA RECLAMAR", status)
+		currentTarget = nil
+		releaseAutopilot("STP: SIN CARGA", status)
 		return false
 	end
 
+	stPatricLastSubmitAttempt = os.clock()
 	isReturning = true
 	returnLocked = true
 	if mainButton then
 		updateButtonState(mainButton)
 	end
 
-	if not engageAutopilot("TSUNAMI: LLEVANDO A TORRE...", status) then
+	if not engageAutopilot("STP: LLEVANDO A OLLA...", status) then
 		isReturning = false
 		return false
 	end
 
 	local prompt, promptScore = findStPatricSubmitPrompt()
 	if not prompt or promptScore <= 0 then
-		releaseAutopilot("TSUNAMI: TORRE NO ENCONTRADA", status)
+		releaseAutopilot("STP: OLLA NO ENCONTRADA", status)
 		isReturning = false
 		return false
 	end
@@ -2735,10 +2766,9 @@ local function submitStPatricLoad(status, runToken)
 	)
 
 	local promptPos = getWorldPositionFromInstance(prompt)
-	tsunamiLastPromptPosition = promptPos or getWorldPositionFromInstance(prompt)
 	if promptPos then
 		if not approachStPatricPrompt(promptPos, runToken) then
-			releaseAutopilot("TSUNAMI: NO SE PUDO LLEGAR A LA TORRE", status)
+			releaseAutopilot("STP: NO SE PUDO ACERCAR A OLLA", status)
 			isReturning = false
 			return false
 		end
@@ -2813,10 +2843,16 @@ local function submitStPatricLoad(status, runToken)
 				return finalizeStPatricSubmit(status, carryCount, toolsBefore, toolsNow, carryNow <= 0 and "carry_zero" or "tools_changed")
 			end
 			if confirmOk then
-				local promptNow, promptScoreNow = findStPatricSubmitPrompt()
-				if not promptNow or promptScoreNow <= 0 then
-					debugLog("STP_CONFIRM_COMMIT", "prompt de torre ausente tras yes")
-					return finalizeStPatricSubmit(status, carryCount, toolsBefore, toolsNow, "prompt_gone")
+				local chestPhaseReady, chestPromptCount, chestReason = detectStPatricChestPhase()
+				if chestPhaseReady then
+					debugLog("STP_CONFIRM_COMMIT", "fase cofres detectada tras yes prompts=" .. tostring(chestPromptCount) .. " reason=" .. tostring(chestReason))
+					return finalizeStPatricSubmit(status, carryCount, toolsBefore, toolsNow, "chest_phase")
+				end
+
+				local potPrompt, potScore = findStPatricSubmitPrompt()
+				if not potPrompt or potScore <= 0 then
+					debugLog("STP_CONFIRM_COMMIT", "prompt de olla ausente tras yes")
+					return finalizeStPatricSubmit(status, carryCount, toolsBefore, toolsNow, "pot_gone")
 				end
 			end
 			if os.clock() - lastWaitLog >= 0.5 then
@@ -2856,7 +2892,7 @@ local function submitStPatricLoad(status, runToken)
 
 	debugLog("STP_SUBMIT_FAIL", "sin confirmacion de entrega")
 	isReturning = false
-	releaseAutopilot("TSUNAMI: RECLAMO FALLIDO", status)
+	releaseAutopilot("STP: ENTREGA FALLIDA", status)
 	return false
 end
 
@@ -2891,15 +2927,9 @@ local function bindBrainrotWatcher()
 	end)
 end
 
-local guiParent = game:GetService("CoreGui")
-pcall(function()
-	if type(gethui) == "function" then
-		local customGuiParent = gethui()
-		if customGuiParent then
-			guiParent = customGuiParent
-		end
-	end
-end)
+local guiParent = pcall(function()
+	return gethui()
+end) and gethui() or game:GetService("CoreGui")
 
 local oldGui = guiParent:FindFirstChild("OsakaV79Fix")
 if oldGui then
@@ -2982,7 +3012,7 @@ panel.Visible = false
 local status = Instance.new("TextLabel", panel)
 status.Size = UDim2.new(1, 0, 0, 20)
 status.Position = UDim2.new(0, 0, 0, 0)
-status.Text = "TSUNAMI: ESPERANDO"
+status.Text = "ST PATRIC: ESPERANDO"
 status.TextColor3 = Color3.new(1, 1, 1)
 status.BackgroundTransparency = 1
 status.Font = Enum.Font.Gotham
@@ -2992,7 +3022,7 @@ status.TextXAlignment = Enum.TextXAlignment.Left
 local limitLabel = Instance.new("TextLabel", panel)
 limitLabel.Size = UDim2.new(1, 0, 0, 18)
 limitLabel.Position = UDim2.new(0, 0, 0, 24)
-limitLabel.Text = "META PREMIO (3-20)"
+limitLabel.Text = "LIMITE"
 limitLabel.TextColor3 = Color3.new(0.8, 0.8, 0.8)
 limitLabel.BackgroundTransparency = 1
 limitLabel.Font = Enum.Font.Gotham
@@ -3099,6 +3129,7 @@ local function shutdownScript()
 	isReturning = false
 	isGrabbing = false
 	returnLocked = false
+	stPatricChestPhase = false
 	eventShieldMode = false
 	forceRescan = false
 	currentTarget = nil
@@ -3181,10 +3212,7 @@ local function updateReturnLimit(delta)
 	if scriptClosed then
 		return
 	end
-	if type(delta) == "number" and delta ~= 0 then
-		returnAt = math.clamp(returnAt + delta, tsunamiMinSubmitCount, 20)
-		debugLog("TSUNAMI_LIMIT", "meta_reclamo=" .. tostring(returnAt))
-	end
+	returnAt = stPatricMaxCarry
 	limitValue.Text = tostring(returnAt)
 end
 
@@ -3223,14 +3251,14 @@ towerBtn.MouseButton1Click:Connect(function()
 	if scriptClosed then
 		return
 	end
-	status.Text = "TOWER TSUNAMI"
+	status.Text = "ST PATRIC DEDICADO"
 end)
 
 shieldBtn.MouseButton1Click:Connect(function()
 	if scriptClosed then
 		return
 	end
-	status.Text = "TOWER TSUNAMI"
+	status.Text = "ST PATRIC DEDICADO"
 end)
 
 copyLogsBtn.MouseButton1Click:Connect(function()
@@ -3394,7 +3422,7 @@ charAddedConn = LP.CharacterAdded:Connect(function()
 			captureBaselineTools()
 			armStartupStabilization("respawn")
 			isRespawning = false
-			releaseAutopilot("TSUNAMI: BUSCANDO BRAINROTS...", status)
+			releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
 			refreshTargets(true)
 		end
 	end
@@ -3437,6 +3465,16 @@ btn.MouseButton1Click:Connect(function()
 		if eventShieldMode then
 			setEventShieldMode(false, status)
 		end
+		local eventOk, eventReason, eventScore = detectStPatricEventContext()
+		if not eventOk then
+			watchMode = false
+			updateButtonState(btn)
+			debugLog("STP_CONTEXT_FAIL", "evento St Patric no detectado reason=" .. tostring(eventReason) .. " score=" .. tostring(eventScore))
+			status.Text = "STP: EVENTO NO DETECTADO"
+			return
+		end
+		debugLog("STP_CONTEXT_OK", "reason=" .. tostring(eventReason) .. " score=" .. tostring(eventScore))
+		stPatricChestPhase = false
 		resetSessionProgress()
 		invalidateRunToken("watchOn")
 		debugLog("STP_ON", string.format("base=(%.2f, %.2f, %.2f)", root.Position.X, root.Position.Y, root.Position.Z))
@@ -3448,19 +3486,13 @@ btn.MouseButton1Click:Connect(function()
 		resetRunState()
 		bindBrainrotWatcher()
 		refreshTargets(true)
-		local readyNow = getEffectiveTsunamiReadyState()
-		if getTsunamiCooldownRemaining() > 0 then
-			status.Text = getTsunamiCooldownStatus("TSUNAMI")
-		elseif isTsunamiReadyGateEnabled() and not readyNow then
-			status.Text = "TSUNAMI: ESPERANDO TORRE LISTA..."
-		else
-			status.Text = "TSUNAMI: BUSCANDO BRAINROTS..."
-		end
-		releaseAutopilot(status.Text, status)
+		status.Text = "STP: BUSCANDO BRAINROTS..."
+		releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
 	else
 		invalidateRunToken("watchOff")
+		stPatricChestPhase = false
 		debugLog("STP_OFF", "script en espera")
-		releaseAutopilot("TOWER TSUNAMI: ESPERANDO", status)
+		releaseAutopilot("ST PATRIC: ESPERANDO", status)
 		resetRunState()
 	end
 end)
@@ -3494,9 +3526,6 @@ mainLoopThread = task.spawn(function()
 
 			updateReturnLimit()
 			local carryCount = getEffectiveCarryCount()
-			local cooldownRemaining = getTsunamiCooldownRemaining()
-			local rewardPickupActive = isTsunamiRewardPickupActive()
-			local readyNow, readyReason, readyPath = getEffectiveTsunamiReadyState()
 
 			local humanoid = getHumanoid()
 			local root = getRoot()
@@ -3504,47 +3533,65 @@ mainLoopThread = task.spawn(function()
 				return
 			end
 
-			if isTsunamiReadyGateEnabled() and not rewardPickupActive and cooldownRemaining <= 0 and not readyNow then
-				releaseAutopilot("TSUNAMI: ESPERANDO TORRE LISTA...", status)
-				return
+			if not stPatricChestPhase then
+				local eventOk = detectStPatricEventContext()
+				if not eventOk then
+					debugLog("STP_CONTEXT_LOST", "marcadores del evento ya no existen")
+					releaseAutopilot("STP: EVENTO NO DETECTADO", status)
+					watchMode = false
+					updateButtonState(btn)
+					return
+				end
 			end
 
-			if readyNow and not rewardPickupActive and cooldownRemaining <= 0 and status.Text == "TSUNAMI: ESPERANDO TORRE LISTA..." then
-				debugLog("TSUNAMI_READY", "reason=" .. tostring(readyReason) .. " path=" .. tostring(readyPath))
+			if stPatricChestPhase then
+				if (carryCount >= returnAt or (carryCount > 0 and #getStPatricChestPrompts() == 0)) and not isReturning and not isGrabbing then
+					debugLog("STP_CHEST_RETURN", "carry=" .. tostring(carryCount) .. " chest_prompts=" .. tostring(#getStPatricChestPrompts()))
+					returnToBase(status, "STP: VOLVIENDO A HOME...", runToken)
+					return
+				end
+
+				if isReturning then
+					releaseAutopilot("STP: VOLVIENDO A HOME...", status)
+					return
+				end
 			end
 
-			if cooldownRemaining > 0 and not rewardPickupActive then
-				releaseAutopilot(getTsunamiCooldownStatus("TSUNAMI"), status)
-				return
-			end
-
-			if not rewardPickupActive and (returnLocked or carryCount >= returnAt) and not isReturning then
+			if not stPatricChestPhase and (returnLocked or carryCount >= returnAt) and not isReturning then
 				debugLog("STP_RETURN", "returnLocked=" .. tostring(returnLocked) .. " inv=" .. tostring(invCount) .. " carry=" .. tostring(carryCount))
+				if os.clock() - stPatricLastSubmitAttempt < stPatricSubmitCooldown then
+					releaseAutopilot("STP: ESPERANDO OLLA...", status)
+					return
+				end
 				returnLocked = true
 				submitStPatricLoad(status, runToken)
 				return
 			end
 
 			if isReturning then
-				releaseAutopilot("TSUNAMI: RECLAMANDO...", status)
+				releaseAutopilot(stPatricChestPhase and "STP: VOLVIENDO A HOME..." or "STP: ENTREGANDO...", status)
 				return
 			end
 
-			local target, availableCount = rewardPickupActive and getTsunamiRewardTarget() or getStPatricTarget()
+			local target, availableCount = getStPatricTarget()
 			if not target then
 				debugLog("STP_NO_TARGET", "inv=" .. tostring(invCount) .. " returnLocked=" .. tostring(returnLocked))
-				if rewardPickupActive then
-					currentTarget = nil
-					releaseAutopilot("TSUNAMI: BUSCANDO DROP FINAL... " .. tostring(math.ceil(getTsunamiRewardPickupRemaining())) .. "s", status)
-				elseif (carryCount >= tsunamiMinSubmitCount or returnLocked) and not isReturning and not isGrabbing then
-					returnLocked = carryCount >= returnAt or returnLocked
+				if stPatricChestPhase then
+					if triggerStPatricChestPrompt(status, runToken) then
+						return
+					end
+					if invCount > 0 and not isReturning and not isGrabbing then
+						returnToBase(status, "STP: VOLVIENDO A HOME...", runToken)
+					else
+						currentTarget = nil
+						releaseAutopilot("STP: BUSCANDO COFRES...", status)
+					end
+				elseif (invCount > 0 or returnLocked) and not isReturning and not isGrabbing then
+					returnLocked = invCount > 0 or returnLocked
 					submitStPatricLoad(status, runToken)
-				elseif carryCount > 0 then
-					currentTarget = nil
-					releaseAutopilot("TSUNAMI: FALTAN " .. tostring(tsunamiMinSubmitCount - carryCount) .. " PARA RECLAMAR", status)
 				else
 					currentTarget = nil
-					releaseAutopilot("TSUNAMI: BUSCANDO BRAINROTS...", status)
+					releaseAutopilot("STP: BUSCANDO BRAINROTS...", status)
 				end
 				return
 			end
@@ -3558,10 +3605,7 @@ mainLoopThread = task.spawn(function()
 				return
 			end
 
-			local objectiveText = rewardPickupActive
-				and ("DROP FINAL: " .. tostring(availableCount) .. " | " .. tostring(math.ceil(getTsunamiRewardPickupRemaining())) .. "s")
-				or ("OBJETIVOS: " .. tostring(availableCount) .. " | " .. tostring(carryCount) .. "/" .. tostring(returnAt))
-			if not engageAutopilot(objectiveText, status) then
+			if not engageAutopilot("OBJETIVOS: " .. tostring(availableCount) .. " | " .. tostring(carryCount) .. "/" .. tostring(returnAt), status) then
 				return
 			end
 
@@ -3614,9 +3658,12 @@ mainLoopThread = task.spawn(function()
 				currentTarget = nil
 				removeFromCache(target)
 				refreshTargets(true)
-				status.Text = rewardPickupActive and ("TSUNAMI DROP: " .. tostring(invCount)) or ("TSUNAMI: " .. tostring(invCount) .. "/" .. tostring(returnAt))
+				status.Text = "STP: " .. tostring(invCount) .. "/" .. tostring(returnAt)
 
-				if not rewardPickupActive and (returnLocked or invCount >= returnAt) then
+				if stPatricChestPhase and invCount >= returnAt then
+					debugLog("STP_CHEST_HOME", "limite alcanzado en cofres carry=" .. tostring(invCount) .. "/" .. tostring(returnAt))
+					returnToBase(status, "STP: VOLVIENDO A HOME...", runToken)
+				elseif returnLocked or invCount >= returnAt then
 					debugLog("STP_TRIGGER", "limite alcanzado")
 					submitStPatricLoad(status, runToken)
 				else
@@ -3628,7 +3675,13 @@ mainLoopThread = task.spawn(function()
 					logHealthState("grab_fail", currentHumanoid)
 				end
 				local carryAfterFail = getEffectiveCarryCount()
-				if not rewardPickupActive and (returnLocked or carryAfterFail >= returnAt) then
+				if stPatricChestPhase and carryAfterFail >= returnAt then
+					returnLocked = false
+					grabAttempts = 0
+					debugLog("STP_CHEST_HOME", "limite detectado tras grab abort carry=" .. tostring(carryAfterFail) .. "/" .. tostring(returnAt))
+					returnToBase(status, "STP: VOLVIENDO A HOME...", runToken)
+					return
+				elseif returnLocked or carryAfterFail >= returnAt then
 					returnLocked = true
 					grabAttempts = 0
 					debugLog("STP_TRIGGER", "limite detectado tras grab abort carry=" .. tostring(carryAfterFail) .. "/" .. tostring(returnAt))
@@ -3637,7 +3690,7 @@ mainLoopThread = task.spawn(function()
 				end
 				grabAttempts = grabAttempts + 1
 				debugLog("STP_GRAB_FAIL", "fail intento=" .. tostring(grabAttempts))
-				status.Text = (rewardPickupActive and "TSUNAMI DROP FAIL " or "TSUNAMI FAIL ") .. tostring(grabAttempts) .. "/3"
+				status.Text = "STP FAIL " .. tostring(grabAttempts) .. "/3"
 				if grabAttempts >= 3 then
 					blacklist[target] = true
 					currentTarget = nil
@@ -3662,17 +3715,3 @@ mainLoopThread = task.spawn(function()
 		end
 	end
 end)
-
-end
-
-local __tsunami_ok, __tsunami_err = xpcall(__tsunami_main, function(err)
-	if debug and type(debug.traceback) == "function" then
-		return debug.traceback(err)
-	end
-	return tostring(err)
-end)
-if not __tsunami_ok then
-	pcall(function()
-		warn(__tsunami_err)
-	end)
-end
