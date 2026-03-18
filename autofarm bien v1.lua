@@ -2475,6 +2475,10 @@ godBtn.MouseButton1Click:Connect(function()
 	if scriptClosed then
 		return
 	end
+	if manualMoveMode and godMode then
+		status.Text = "GOD BLOQUEADO EN MOVE"
+		return
+	end
 	godMode = not godMode
 	local humanoid = getHumanoid()
 	if humanoid then
@@ -2503,7 +2507,17 @@ moveBtn.MouseButton1Click:Connect(function()
 	manualMoveMode = not manualMoveMode
 	if manualMoveMode then
 		godMode = true
+		local root = getRoot()
+		local humanoid = getHumanoid()
+		if root then
+			flyValue.Value = root.CFrame
+			basePos = root.Position
+		end
+		if humanoid and root then
+			applyTravelGodState(humanoid, root)
+		end
 		debugLog("MANUAL_MOVE", "enabled=true")
+		debugLog("MANUAL_SYNC", string.format("fly=(%s)", formatVectorCompact(flyValue.Value.Position)))
 		status.Text = "MOVE GOD MANUAL"
 	else
 		debugLog("MANUAL_MOVE", "enabled=false")
