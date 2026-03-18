@@ -57,9 +57,9 @@ local stPatricNearFullMargin = 1
 local stPatricPostTriggerDelay = 0.12
 local stPatricSubmitCheckInterval = 0.06
 local stPatricRequiredDrainChecks = 1
-local stPatricConfirmedDrainWindow = 3.2
-local stPatricUnconfirmedDrainWindow = 1.8
-local stPatricRepromptDelay = 0.9
+local stPatricConfirmedDrainWindow = 1.6
+local stPatricUnconfirmedDrainWindow = 1.4
+local stPatricRepromptDelay = 0.35
 local stPatricHoldSnapDistance = 3.5
 local stPatricImmediateRepromptDelay = 0.18
 
@@ -2592,7 +2592,7 @@ local function submitStPatricLoad(status, runToken)
 		end
 		local drainedConfirmations = 0
 		local repromptDone = false
-		local repromptAt = os.clock() + stPatricRepromptDelay
+		local repromptAt = os.clock() + (confirmOk and 0.25 or stPatricRepromptDelay)
 
 		local deadline = os.clock() + (confirmOk and stPatricConfirmedDrainWindow or stPatricUnconfirmedDrainWindow)
 		while os.clock() < deadline do
