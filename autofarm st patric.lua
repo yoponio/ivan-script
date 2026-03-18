@@ -1337,6 +1337,7 @@ end
 local function releaseAutopilot(reason, status)
 	local root = getRoot()
 	if root then
+		flyValue.Value = root.CFrame
 		root.AssemblyLinearVelocity = Vector3.zero
 		root.AssemblyAngularVelocity = Vector3.zero
 	end
@@ -1637,6 +1638,10 @@ local function ghostTravel(targetPos, forcedY, respectBaseClamp, runToken)
 		debugLog("TRAVEL_FAIL", "sin root para viajar")
 		return false
 	end
+
+	-- Keep the tween source aligned with the real character position so we don't
+	-- falsely complete travels after leaving the pot or respawning.
+	flyValue.Value = root.CFrame
 
 	local safeY = resolveTravelY(targetPos, forcedY, respectBaseClamp ~= false)
 	debugLog(
