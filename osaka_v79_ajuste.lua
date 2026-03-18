@@ -2,7 +2,7 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
-local scriptVersion = "v79.2-r7-respawn-cleanup"
+local scriptVersion = "v79.2-r8-final-polish"
 
 print("--- INICIANDO OSAKA " .. scriptVersion .. " (FREE SENTINEL FIX) ---")
 
@@ -1512,7 +1512,7 @@ local function grabItem(target, runToken)
 
 	task.wait(0.15)
 
-	for _ = 1, 4 do
+	for attempt = 1, 4 do
 		if runToken ~= nil and not isOperationValid(runToken) then
 			debugLog("GRAB_ABORT", "operacion invalidada durante trigger")
 			isGrabbing = false
@@ -1543,7 +1543,12 @@ local function grabItem(target, runToken)
 			fireproximityprompt(prompt)
 		end)
 		triggered = fireOk or triggered
-		debugLog("GRAB_TRIGGER", "prompt=" .. prompt:GetFullName() .. " ok=" .. tostring(fireOk) .. (fireErr and (" err=" .. tostring(fireErr)) or ""))
+		if attempt == 1 or not fireOk or fireErr then
+			debugLog(
+				"GRAB_TRIGGER",
+				"prompt=" .. prompt:GetFullName() .. " ok=" .. tostring(fireOk) .. (fireErr and (" err=" .. tostring(fireErr)) or "") .. " attempt=" .. tostring(attempt)
+			)
+		end
 
 		local claimed, claimedReason = isClaimConfirmed()
 		if claimed then
@@ -2016,6 +2021,9 @@ local function shutdownScript()
 	shieldLastHealth = nil
 	shieldLastDamageTime = 0
 	shieldLastRecoverTime = 0
+	lastBrainrotSpawnLog = 0
+	pendingBrainrotSpawnCount = 0
+	pendingBrainrotSpawnSample = nil
 	activeRunToken = activeRunToken + 1
 
 	local humanoid = getHumanoid()
