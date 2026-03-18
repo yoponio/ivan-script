@@ -15,13 +15,16 @@ local LP = Players.LocalPlayer
 local autoFarm = false
 local scriptClosed = false
 local activeTween = nil
+local flyValue = Instance.new("CFrameValue")
 local movementConn = nil
 local loopThread = nil
 local watchPromptConn = nil
 local characterAddedConn = nil
+local basePos = nil
 
 local instantMove = true
 local flySpeed = 420
+local safeDepth = -8.5
 local settleTime = 0.03
 local orbTouchTime = 0.05
 local depositDistance = 6
@@ -190,13 +193,82 @@ local function setCollision(enabled)
 	end
 end
 
+local function resolveBasePosition()
+	local prompt = getDepositPrompt and getDepositPrompt() or nil
+	local promptPosition = prompt and getModelPosition(prompt)
+	if promptPosition then
+		return promptPosition
+	end
+	local root = getRoot()
+	return root and root.Position or nil
+end
+
+local function resolveTravelY(targetPos, forcedY)
+	local fallenLimit = workspace.FallenPartsDestroyHeight or -500
+	local minSafeY = fallenLimit + 25
+	local referencePos = basePos or resolveBasePosition() or targetPos
+	local safeY = forcedY or (referencePos.Y + safeDepth)
+	safeY = math.max(safeY, minSafeY)
+	return safeY
+end
+
+local function snapTo(goal)
+	local character = getCharacter()
+	local root = getRoot()
+	if not root then
+		return false
+	end
+	flyValue.Value = goal
+	pcall(function()
+		if character then
+			character:PivotTo(goal)
+		else
+			root.CFrame = goal
+		end
+	end)
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+	return true
+end
+
+local function safeTravel(targetPos, finalYOffset, forcedSafeY)
+	local root = getRoot()
+	if not root then
+		return false
+	end
+	local safeY = resolveTravelY(targetPos, forcedSafeY)
+	local stage1 = CFrame.new(root.Position.X, safeY, root.Position.Z)
+	local stage2 = CFrame.new(targetPos.X, safeY, targetPos.Z)
+	local stage3 = CFrame.new(targetPos.X, targetPos.Y + (finalYOffset or 0), targetPos.Z)
+	if not snapTo(stage1) then
+		return false
+	end
+	task.wait()
+	if not snapTo(stage2) then
+		return false
+	end
+	task.wait()
+	return snapTo(stage3)
+end
+
 local function startMovementAssist()
 	if movementConn then
 		return
 	end
+	local root = getRoot()
+	if root then
+		flyValue.Value = root.CFrame
+	end
 	movementConn = RunService.Stepped:Connect(function()
+		local rootPart = getRoot()
+		if not rootPart then
+			return
+		end
 		if autoFarm then
 			setCollision(false)
+			rootPart.CFrame = flyValue.Value
+			rootPart.AssemblyLinearVelocity = Vector3.zero
+			rootPart.AssemblyAngularVelocity = Vector3.zero
 		end
 	end)
 end
@@ -216,9 +288,7 @@ local function moveTo(targetCFrame, speed)
 	end
 	stopTween()
 	if instantMove then
-		root.AssemblyLinearVelocity = Vector3.zero
-		root.AssemblyAngularVelocity = Vector3.zero
-		root.CFrame = targetCFrame
+		safeTravel(targetCFrame.Position, 0)
 		return autoFarm
 	end
 	local distance = (root.Position - targetCFrame.Position).Magnitude
@@ -384,7 +454,7 @@ local function tryTouch(part)
 			firetouchinterest(root, part, 1)
 		end)
 	end
-	root.CFrame = part.CFrame + Vector3.new(0, 1.5, 0)
+	safeTravel(part.Position, 1.5)
 	task.wait(orbTouchTime)
 	return true
 end
@@ -491,6 +561,7 @@ local function setAutoFarm(state)
 		toggleButton.BackgroundColor3 = autoFarm and Color3.fromRGB(55, 110, 70) or Color3.fromRGB(45, 50, 55)
 	end
 	if autoFarm then
+		basePos = resolveBasePosition() or basePos
 		setStatus("Juntando orbes hasta 100 para depositar en Ghost Cannon")
 		startMovementAssist()
 		if not loopThread then
@@ -507,6 +578,10 @@ end
 local function onCharacterAdded(character)
 	debugLog("RESPAWN", safePath(character))
 	task.wait(1)
+	local root = getRoot()
+	if root then
+		flyValue.Value = root.CFrame
+	end
 	if autoFarm then
 		startMovementAssist()
 	end
@@ -632,4 +707,5 @@ end)
 
 updateCopyLogsButton()
 debugLog("BOOT", "Ghost Cannon=" .. safePath(getDepositPrompt()))
+basePos = resolveBasePosition() or basePos
 setAutoFarm(true)
