@@ -57,6 +57,10 @@ local stPatricNearFullMargin = 1
 local stPatricPostTriggerDelay = 0.12
 local stPatricSubmitCheckInterval = 0.06
 local stPatricRequiredDrainChecks = 1
+local stPatricConfirmedDrainWindow = 3.2
+local stPatricUnconfirmedDrainWindow = 1.8
+local stPatricRepromptDelay = 0.9
+local stPatricHoldSnapDistance = 3.5
 
 local invCount = 0
 local basePos = nil
@@ -2558,8 +2562,10 @@ local function submitStPatricLoad(status, runToken)
 		task.wait(stPatricPostTriggerDelay)
 		local confirmOk, dialogSeen = confirmStPatricDialog(status)
 		local drainedConfirmations = 0
+		local repromptDone = false
+		local repromptAt = os.clock() + stPatricRepromptDelay
 
-		local deadline = os.clock() + 1.8
+		local deadline = os.clock() + (confirmOk and stPatricConfirmedDrainWindow or stPatricUnconfirmedDrainWindow)
 		while os.clock() < deadline do
 			if runToken ~= nil and not isOperationValid(runToken) then
 				debugLog("STP_SUBMIT_ABORT", "operacion invalidada esperando confirmacion de entrega")
@@ -2573,7 +2579,7 @@ local function submitStPatricLoad(status, runToken)
 			end
 			if promptPos then
 				local holdGoal = CFrame.new(promptPos.X, promptPos.Y + stPatricPromptHeightOffset, promptPos.Z)
-				if getGoalDistance(holdGoal) > 6 then
+				if getGoalDistance(holdGoal) > stPatricHoldSnapDistance then
 					snapCharacterTo(holdGoal)
 				end
 			end
@@ -2582,6 +2588,13 @@ local function submitStPatricLoad(status, runToken)
 			local dialogVisible, dialogPath, dialogScore = getVisibleStPatricDialog()
 			local carryDrained = toolsNow < toolsBefore or carryNow <= 0
 			local promptData = safePromptData(prompt)
+			if confirmOk and not carryDrained and not dialogVisible and not repromptDone and os.clock() >= repromptAt then
+				local retryOk, retryErr = pcall(function()
+					fireproximityprompt(prompt)
+				end)
+				debugLog("STP_SUBMIT_RETRY", "prompt=" .. safeInstancePath(prompt) .. " ok=" .. tostring(retryOk) .. (retryErr and (" err=" .. tostring(retryErr)) or ""))
+				repromptDone = true
+			end
 			if carryDrained and not dialogVisible then
 				drainedConfirmations = drainedConfirmations + 1
 			else
