@@ -33,6 +33,7 @@ local lastDepositCount = 0
 local depositPendingSince = 0
 local orbBlacklist = {}
 local orbRegistry = {}
+local lastOrbWaitLogAt = 0
 
 local instantMove = true
 local flySpeed = 420
@@ -56,6 +57,7 @@ local orbRetreatOffset = -18
 local remoteTouchAttempts = 2
 local orbBlacklistSeconds = 8
 local depositResetTimeout = 2.5
+local orbWaitLogInterval = 0.4
 local maxStoredLogs = 250
 
 local storedLogs = {}
@@ -72,6 +74,7 @@ local registerOrbModel
 local unregisterOrbModel
 local isOrbModel
 local isOrbCandidate
+local scanWorkspaceForNearestOrb
 
 local function updateCopyLogsButton()
 	if copyLogsButton then
@@ -369,6 +372,32 @@ local function resolveOrbPart(model)
 	return nil
 end
 
+scanWorkspaceForNearestOrb = function(root)
+	local bestModel = nil
+	local bestPart = nil
+	local bestDistance = math.huge
+	for _, descendant in ipairs(workspace:GetDescendants()) do
+		if isOrbCandidate(descendant) then
+			local path = safePath(descendant)
+			if not isBlacklisted(path) then
+				local part = resolveOrbPart(descendant)
+				if part then
+					local distance = (root.Position - part.Position).Magnitude
+					if distance < bestDistance then
+						bestDistance = distance
+						bestModel = descendant
+						bestPart = part
+					end
+				end
+			end
+		end
+	end
+	if bestModel then
+		registerOrbModel(bestModel)
+	end
+	return bestModel, bestPart, bestDistance
+end
+
 isOrbCandidate = function(instance)
 	if not instance then
 		return false
@@ -519,7 +548,12 @@ local function getNearestOrb()
 			end
 		end
 		if not bestModel then
-			debugLog("ORB_REGISTRY", string.format("registry=%d blacklisted=%d", registryCount, next(orbBlacklist) and 1 or 0))
+			bestModel, bestPart, bestDistance = scanWorkspaceForNearestOrb(root)
+			if bestModel then
+				debugLog("ORB_SCAN_RECOVER", string.format("path=%s dist=%.1f", safePath(bestModel), bestDistance))
+			else
+				debugLog("ORB_REGISTRY", string.format("registry=%d blacklisted=%d", registryCount, next(orbBlacklist) and 1 or 0))
+			end
 		end
 	end
 	return bestModel, bestPart, bestDistance
@@ -727,7 +761,10 @@ local function collectOrbCycle()
 	end
 	local orbModel, orbPart, distance = getNearestOrb()
 	if not orbModel or not orbPart then
-		debugLog("ORB_WAIT", string.format("sin orbes phantom held=%d/%d", heldCount, depositTargetCount))
+		if (os.clock() - lastOrbWaitLogAt) >= orbWaitLogInterval then
+			lastOrbWaitLogAt = os.clock()
+			debugLog("ORB_WAIT", string.format("sin orbes phantom held=%d/%d", heldCount, depositTargetCount))
+		end
 		taskWait(orbRefreshDelay)
 		return
 	end
