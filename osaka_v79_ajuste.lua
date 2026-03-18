@@ -79,6 +79,17 @@ local lastScanHint = ""
 local startupReleaseTime = 0
 local firstTripPending = false
 local activeRunToken = 0
+local monitorLogInterval = 2.0
+local lastMonitorLog = 0
+local lastObservedCarryCount = -1
+local lastObservedToolCount = -1
+local autopilotOffLogCooldown = 1.0
+local lastAutopilotOffReason = nil
+local lastAutopilotOffLog = 0
+local interferenceLogCooldown = 0.75
+local lastPlatformInterferenceLog = 0
+local lastAnchorInterferenceLog = 0
+local lastDesyncInterferenceLog = 0
 
 local flyValue = Instance.new("CFrameValue")
 
@@ -86,11 +97,15 @@ local diedConn = nil
 local charAddedConn = nil
 local brainrotAddedConn = nil
 local steppedConn = nil
+local healthChangedConn = nil
+local stateChangedConn = nil
+local seatedConn = nil
 local mainLoopThread = nil
 local mainButton = nil
 local towerButton = nil
 local shieldButton = nil
 local copyLogsButton = nil
+local clearLogsButton = nil
 local shieldCFrame = nil
 local shieldBaseCFrame = nil
 local shieldRetreatOffset = 0
@@ -243,6 +258,16 @@ local function copyLogsToClipboard(status)
 
 	debugLog(copied and "LOG_COPY_OK" or "LOG_COPY_FAIL", copied and ("entries=" .. tostring(#storedLogs)) or tostring(copyError or "sin API de clipboard"))
 	return copied
+end
+
+local function clearStoredLogs(status)
+	storedLogs = {}
+	lastScanSummary = ""
+	lastSelectionSummary = ""
+	updateCopyLogsButtonState()
+	if status then
+		status.Text = "LOGS LIMPIADOS"
+	end
 end
 
 local function debugOnce(eventName, details, key)
@@ -454,6 +479,115 @@ local function logHealthState(tag, humanoid, previousHealth)
 	end
 	debugLog("HEALTH_TRACE", string.format("%s hp=%.2f%s", tostring(tag), currentHealth, deltaText))
 	return currentHealth
+end
+
+local function safeTargetPath(target)
+	if not target then
+		return "nil"
+	end
+
+	local ok, fullName = pcall(function()
+		return target:GetFullName()
+	end)
+	if ok and fullName and fullName ~= "" then
+		return fullName
+	end
+
+	return tostring(target.Name)
+end
+
+local function getHumanoidStateName(humanoid)
+	if not humanoid then
+		return "nil"
+	end
+
+	local stateName = "unknown"
+	pcall(function()
+		stateName = humanoid:GetState().Name
+	end)
+	return stateName
+end
+
+local function formatVectorCompact(vector)
+	if not vector then
+		return "nil"
+	end
+
+	return string.format("%.1f,%.1f,%.1f", vector.X, vector.Y, vector.Z)
+end
+
+local function logObservedInventoryChange(carryCount, toolCount)
+	if carryCount ~= lastObservedCarryCount or toolCount ~= lastObservedToolCount then
+		debugLog(
+			"MONITOR_COUNT",
+			string.format(
+				"carry=%d->%d tools=%d->%d inv=%d returnLocked=%s",
+				lastObservedCarryCount,
+				carryCount,
+				lastObservedToolCount,
+				toolCount,
+				invCount,
+				tostring(returnLocked)
+			)
+		)
+		lastObservedCarryCount = carryCount
+		lastObservedToolCount = toolCount
+	end
+end
+
+local function logMonitorSnapshot(source, status)
+	if not (watchMode or autoPilot or isReturning or isGrabbing or eventShieldMode) then
+		return
+	end
+
+	local now = os.clock()
+	if now - lastMonitorLog < monitorLogInterval then
+		return
+	end
+	lastMonitorLog = now
+
+	local root = getRoot()
+	local humanoid = getHumanoid()
+	if not root or not humanoid then
+		debugLog("MONITOR", "src=" .. tostring(source) .. " root/humanoid missing")
+		return
+	end
+
+	local toolCount = getFarmToolCount()
+	local carryCount = math.max(invCount, toolCount)
+	local velocity = root.AssemblyLinearVelocity.Magnitude
+	debugLog(
+		"MONITOR",
+		string.format(
+			"src=%s mode=%s auto=%s return=%s grab=%s hp=%.1f/%0.1f state=%s anchored=%s platform=%s carry=%d tools=%d pos=(%s) vel=%.1f target=%s status=%s",
+			tostring(source),
+			getCompactStateLabel(),
+			tostring(autoPilot),
+			tostring(isReturning),
+			tostring(isGrabbing),
+			humanoid.Health,
+			humanoid.MaxHealth,
+			getHumanoidStateName(humanoid),
+			tostring(root.Anchored),
+			tostring(humanoid.PlatformStand),
+			carryCount,
+			toolCount,
+			formatVectorCompact(root.Position),
+			velocity,
+			safeTargetPath(currentTarget),
+			status and tostring(status.Text) or "nil"
+		)
+	)
+end
+
+local function logInterference(eventName, details, lastLoggedAt)
+	local now = os.clock()
+	if now - lastLoggedAt < interferenceLogCooldown then
+		return lastLoggedAt
+	end
+
+	debugLog(eventName, details)
+	return now
 end
 
 local function updateTowerButtonState()
@@ -1006,7 +1140,13 @@ local function releaseAutopilot(reason, status)
 	if reason then
 		status.Text = reason
 	end
-	debugLog("AUTOPILOT_OFF", reason or "sin motivo")
+	local normalizedReason = reason or "sin motivo"
+	local now = os.clock()
+	if normalizedReason ~= lastAutopilotOffReason or (now - lastAutopilotOffLog) >= autopilotOffLogCooldown then
+		debugLog("AUTOPILOT_OFF", normalizedReason)
+		lastAutopilotOffReason = normalizedReason
+		lastAutopilotOffLog = now
+	end
 
 	if mainButton then
 		updateButtonState(mainButton)
@@ -1963,7 +2103,7 @@ filtersBtn.TextSize = 12
 Instance.new("UICorner", filtersBtn)
 
 local copyLogsBtn = Instance.new("TextButton", panel)
-copyLogsBtn.Size = UDim2.new(1, 0, 0, 24)
+copyLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
 copyLogsBtn.Position = UDim2.new(0, 0, 0, 114)
 copyLogsBtn.TextColor3 = Color3.new(1, 1, 1)
 copyLogsBtn.BackgroundColor3 = Color3.fromRGB(65, 90, 140)
@@ -1972,6 +2112,18 @@ copyLogsBtn.TextSize = 11
 copyLogsBtn.BorderSizePixel = 0
 Instance.new("UICorner", copyLogsBtn)
 copyLogsButton = copyLogsBtn
+
+local clearLogsBtn = Instance.new("TextButton", panel)
+clearLogsBtn.Size = UDim2.new(0.5, -2, 0, 24)
+clearLogsBtn.Position = UDim2.new(0.5, 2, 0, 114)
+clearLogsBtn.Text = "LIMPIAR LOGS"
+clearLogsBtn.TextColor3 = Color3.new(1, 1, 1)
+clearLogsBtn.BackgroundColor3 = Color3.fromRGB(110, 55, 55)
+clearLogsBtn.Font = Enum.Font.GothamBold
+clearLogsBtn.TextSize = 11
+clearLogsBtn.BorderSizePixel = 0
+Instance.new("UICorner", clearLogsBtn)
+clearLogsButton = clearLogsBtn
 
 local scroll = Instance.new("ScrollingFrame", frame)
 scroll.Size = UDim2.new(1, -12, 0, 146)
@@ -2013,6 +2165,8 @@ local function shutdownScript()
 	lastScanSummary = ""
 	lastSelectionSummary = ""
 	lastScanHint = ""
+	lastAutopilotOffReason = nil
+	lastAutopilotOffLog = 0
 	startupReleaseTime = 0
 	firstTripPending = false
 	shieldCFrame = nil
@@ -2042,6 +2196,9 @@ local function shutdownScript()
 	charAddedConn = disconnectConnection(charAddedConn)
 	brainrotAddedConn = disconnectConnection(brainrotAddedConn)
 	steppedConn = disconnectConnection(steppedConn)
+	healthChangedConn = disconnectConnection(healthChangedConn)
+	stateChangedConn = disconnectConnection(stateChangedConn)
+	seatedConn = disconnectConnection(seatedConn)
 
 	if mainLoopThread then
 		pcall(function()
@@ -2054,6 +2211,7 @@ local function shutdownScript()
 	towerButton = nil
 	shieldButton = nil
 	copyLogsButton = nil
+	clearLogsButton = nil
 
 	if sg then
 		sg:Destroy()
@@ -2149,6 +2307,13 @@ copyLogsBtn.MouseButton1Click:Connect(function()
 	updateCopyLogsButtonState()
 end)
 
+clearLogsBtn.MouseButton1Click:Connect(function()
+	if scriptClosed then
+		return
+	end
+	clearStoredLogs(status)
+end)
+
 for _, name in ipairs(filterOrder) do
 	local filterButton = Instance.new("TextButton", scroll)
 	filterButton.Size = UDim2.new(1, 0, 0, 24)
@@ -2214,6 +2379,38 @@ steppedConn = RS.Stepped:Connect(function()
 		return
 	end
 
+	local observedToolCount = getFarmToolCount()
+	local observedCarryCount = math.max(invCount, observedToolCount)
+	logObservedInventoryChange(observedCarryCount, observedToolCount)
+	logMonitorSnapshot("stepped", status)
+
+	if autoPilot and not eventShieldMode then
+		if not humanoid.PlatformStand then
+			lastPlatformInterferenceLog = logInterference(
+				"INTERFERE_PLATFORM",
+				string.format("platform=false state=%s target=%s", getHumanoidStateName(humanoid), safeTargetPath(currentTarget)),
+				lastPlatformInterferenceLog
+			)
+		end
+
+		if root.Anchored then
+			lastAnchorInterferenceLog = logInterference(
+				"INTERFERE_ANCHOR",
+				string.format("anchored=true pos=(%s) fly=(%s)", formatVectorCompact(root.Position), formatVectorCompact(flyValue.Value.Position)),
+				lastAnchorInterferenceLog
+			)
+		end
+
+		local desyncDistance = (root.Position - flyValue.Value.Position).Magnitude
+		if desyncDistance > 3 then
+			lastDesyncInterferenceLog = logInterference(
+				"INTERFERE_DESYNC",
+				string.format("dist=%.2f root=(%s) fly=(%s) vel=%.2f", desyncDistance, formatVectorCompact(root.Position), formatVectorCompact(flyValue.Value.Position), root.AssemblyLinearVelocity.Magnitude),
+				lastDesyncInterferenceLog
+			)
+		end
+	end
+
 	if eventShieldMode and shieldCFrame then
 		if humanoid then
 			if shieldLastHealth and humanoid.Health > 0 and humanoid.Health < shieldLastHealth then
@@ -2254,10 +2451,65 @@ local function bindCharacter(btnRef, statusRef)
 		diedConn:Disconnect()
 		diedConn = nil
 	end
+	healthChangedConn = disconnectConnection(healthChangedConn)
+	stateChangedConn = disconnectConnection(stateChangedConn)
+	seatedConn = disconnectConnection(seatedConn)
 
 	local character = getCharacter()
 	local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
 	if humanoid then
+		local lastHealth = humanoid.Health
+		healthChangedConn = humanoid.HealthChanged:Connect(function(health)
+			if scriptClosed then
+				return
+			end
+
+			local delta = health - lastHealth
+			if math.abs(delta) >= 5 or health <= 0 then
+				debugLog(
+					"HEALTH_EVENT",
+					string.format(
+						"hp=%.1f delta=%.1f max=%.1f state=%s watch=%s auto=%s",
+						health,
+						delta,
+						humanoid.MaxHealth,
+						getHumanoidStateName(humanoid),
+						tostring(watchMode),
+						tostring(autoPilot)
+					)
+				)
+			end
+			lastHealth = health
+		end)
+
+		stateChangedConn = humanoid.StateChanged:Connect(function(oldState, newState)
+			if scriptClosed then
+				return
+			end
+			if watchMode or autoPilot or isReturning or isGrabbing or eventShieldMode then
+				debugLog(
+					"STATE_EVENT",
+					string.format(
+						"%s -> %s platform=%s floor=%s",
+						oldState.Name,
+						newState.Name,
+						tostring(humanoid.PlatformStand),
+						tostring(humanoid.FloorMaterial)
+					)
+				)
+			end
+		end)
+
+		seatedConn = humanoid.Seated:Connect(function(active, seatPart)
+			if scriptClosed then
+				return
+			end
+			debugLog(
+				"SEATED_EVENT",
+				string.format("active=%s seat=%s mode=%s", tostring(active), seatPart and seatPart:GetFullName() or "nil", getCompactStateLabel())
+			)
+		end)
+
 		diedConn = humanoid.Died:Connect(function()
 			if scriptClosed then
 				return
@@ -2338,9 +2590,13 @@ btn.MouseButton1Click:Connect(function()
 		if eventShieldMode then
 			setEventShieldMode(false, status)
 		end
+		lastPlatformInterferenceLog = 0
+		lastAnchorInterferenceLog = 0
+		lastDesyncInterferenceLog = 0
 		resetSessionProgress()
 		invalidateRunToken("watchOn")
 		debugLog("WATCH_ON", string.format("base=(%.2f, %.2f, %.2f)", root.Position.X, root.Position.Y, root.Position.Z))
+		debugLog("MONITOR_SESSION", "watch iniciado con monitoreo activo")
 		basePos = root.Position
 		flyValue.Value = root.CFrame
 		root.Anchored = false
@@ -2352,7 +2608,11 @@ btn.MouseButton1Click:Connect(function()
 		releaseAutopilot("VIGILANDO LIBRE...", status)
 	else
 		invalidateRunToken("watchOff")
+		lastPlatformInterferenceLog = 0
+		lastAnchorInterferenceLog = 0
+		lastDesyncInterferenceLog = 0
 		debugLog("WATCH_OFF", "script en espera")
+		debugLog("MONITOR_SESSION", "watch detenido")
 		releaseAutopilot("ESTADO: ESPERANDO", status)
 		resetRunState()
 	end
@@ -2414,7 +2674,11 @@ mainLoopThread = task.spawn(function()
 
 			local target, availableCount = getClosestTarget()
 			if not target then
-				debugLog("NO_TARGET", "inv=" .. tostring(invCount) .. " returnLocked=" .. tostring(returnLocked))
+				debugOnce(
+					"NO_TARGET",
+					"inv=" .. tostring(invCount) .. " returnLocked=" .. tostring(returnLocked),
+					"no_target:" .. tostring(invCount) .. ":" .. tostring(returnLocked) .. ":" .. tostring(lastScanHint)
+				)
 				if (invCount > 0 or returnLocked) and not isReturning and not isGrabbing then
 					returnLocked = invCount > 0 or returnLocked
 					returnToBase(status, "SIN MAS OBJETIVOS, VOLVIENDO...", runToken)
