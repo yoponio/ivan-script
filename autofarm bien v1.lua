@@ -100,6 +100,9 @@ local lastHealthWaitLog = 0
 local healthWaitLogCooldown = 1.0
 local lastGodHealLog = 0
 local lastDeathHandledAt = 0
+local lastWaveScrubLog = 0
+local waveScrubLogCooldown = 1.0
+local godForceFieldName = "OsakaGodForceField"
 
 local flyValue = Instance.new("CFrameValue")
 
@@ -719,6 +722,26 @@ local function updateQuietLogsButtonState()
 	quietLogsButton.TextColor3 = Color3.new(1, 1, 1)
 end
 
+local function ensureGodForceField(character, enabled)
+	if not character then
+		return
+	end
+	local existing = character:FindFirstChild(godForceFieldName)
+	if enabled then
+		if existing then
+			return
+		end
+		local forceField = Instance.new("ForceField")
+		forceField.Name = godForceFieldName
+		forceField.Visible = false
+		forceField.Parent = character
+	else
+		if existing then
+			existing:Destroy()
+		end
+	end
+end
+
 local function updateButtonState(btn)
 	if scriptClosed then
 		return
@@ -846,7 +869,7 @@ local function maintainGodMode(humanoid)
 end
 
 local function isTravelModeActive()
-	return autoPilot or manualMoveMode
+	return autoPilot
 end
 
 local function applyTravelGodState(humanoid, root)
@@ -867,6 +890,26 @@ local function applyTravelGodState(humanoid, root)
 	end
 end
 
+local function applyFreeGodState(character, humanoid, root)
+	if humanoid then
+		configureGodHumanoid(humanoid, true)
+		humanoid.PlatformStand = false
+		pcall(function()
+			humanoid.AutoRotate = true
+		end)
+	end
+	if root then
+		root.Anchored = false
+		root.CanCollide = false
+		root.CanTouch = false
+	end
+	ensureGodForceField(character, true)
+	collisionModeLabel = "FREE-GOD"
+	if mainButton then
+		updateButtonState(mainButton)
+	end
+end
+
 local function releaseTravelGodState(humanoid)
 	if humanoid then
 		humanoid.PlatformStand = false
@@ -880,7 +923,112 @@ local function releaseTravelGodState(humanoid)
 			configureGodHumanoid(humanoid, false)
 		end
 	end
+	if not (godMode or manualMoveMode) then
+		ensureGodForceField(LP.Character, false)
+	end
 	restoreCharacterCollisionState()
+end
+
+local function getWaveHazardSummary(origin)
+	if not origin then
+		return "none"
+	end
+	local matches = {}
+	local function considerPart(part)
+		if not part or not part:IsA("BasePart") then
+			return
+		end
+		local lowered = string.lower(part:GetFullName())
+		if not (lowered:find("tsunami", 1, true) or lowered:find("wave", 1, true) or lowered:find("water", 1, true) or lowered:find("acid", 1, true)) then
+			return
+		end
+		local distance = (origin - part.Position).Magnitude
+		if distance <= 120 then
+			table.insert(matches, string.format("%s@%.1f", part:GetFullName(), distance))
+		end
+	end
+
+	local activeTsunamis = workspace:FindFirstChild("ActiveTsunamis")
+	if activeTsunamis then
+		for _, descendant in ipairs(activeTsunamis:GetDescendants()) do
+			considerPart(descendant)
+		end
+	end
+	for _, descendant in ipairs(workspace:GetChildren()) do
+		if descendant:IsA("BasePart") then
+			considerPart(descendant)
+		else
+			local loweredName = string.lower(descendant.Name)
+			if loweredName:find("wave", 1, true) or loweredName:find("tsunami", 1, true) then
+				for _, part in ipairs(descendant:GetDescendants()) do
+					considerPart(part)
+				end
+			end
+		end
+	end
+	table.sort(matches)
+	while #matches > 3 do
+		table.remove(matches)
+	end
+	return #matches > 0 and table.concat(matches, " | ") or "none"
+end
+
+local function scrubWaveHazards(root)
+	local touchedDestroyed = 0
+	local hitboxesDestroyed = 0
+	local partsSanitized = 0
+	local function sanitizePart(part)
+		if not part or not part:IsA("BasePart") then
+			return
+		end
+		part.CanTouch = false
+		part.CanCollide = false
+		part.CanQuery = false
+		partsSanitized = partsSanitized + 1
+		for _, child in ipairs(part:GetChildren()) do
+			if child:IsA("TouchTransmitter") then
+				touchedDestroyed = touchedDestroyed + 1
+				child:Destroy()
+			end
+		end
+		if part.Name == "Hitbox" or part.Name == "Hitbox2" then
+			hitboxesDestroyed = hitboxesDestroyed + 1
+			part:Destroy()
+		end
+	end
+
+	local activeTsunamis = workspace:FindFirstChild("ActiveTsunamis")
+	if activeTsunamis then
+		for _, descendant in ipairs(activeTsunamis:GetDescendants()) do
+			sanitizePart(descendant)
+		end
+	end
+	for _, item in ipairs(workspace:GetChildren()) do
+		local loweredName = string.lower(item.Name)
+		if loweredName:find("wacky", 1, true) or loweredName:find("wave", 1, true) or loweredName:find("tsunami", 1, true) then
+			if item:IsA("BasePart") then
+				sanitizePart(item)
+			end
+			for _, descendant in ipairs(item:GetDescendants()) do
+				sanitizePart(descendant)
+			end
+		end
+	end
+
+	local now = os.clock()
+	if root and (touchedDestroyed > 0 or hitboxesDestroyed > 0 or now - lastWaveScrubLog >= waveScrubLogCooldown) then
+		debugLog(
+			"WAVE_SCRUB",
+			string.format(
+				"parts=%d touch=%d hitbox=%d hazards=%s",
+				partsSanitized,
+				touchedDestroyed,
+				hitboxesDestroyed,
+				getWaveHazardSummary(root.Position)
+			)
+		)
+		lastWaveScrubLog = now
+	end
 end
 
 local function getManualMoveVector()
@@ -2538,18 +2686,27 @@ godBtn.MouseButton1Click:Connect(function()
 	if scriptClosed then
 		return
 	end
-	if manualMoveMode and godMode then
-		status.Text = "GOD BLOQUEADO EN MOVE"
-		return
-	end
 	godMode = not godMode
+	if not godMode and manualMoveMode then
+		manualMoveMode = false
+		clearManualInputState()
+		updateManualMoveButtonState()
+	end
+	local character = getCharacter()
 	local humanoid = getHumanoid()
+	local root = getRoot()
 	if humanoid then
 		if godMode then
-			configureGodHumanoid(humanoid, true)
+			if manualMoveMode then
+				applyFreeGodState(character, humanoid, root)
+			else
+				configureGodHumanoid(humanoid, true)
+				ensureGodForceField(character, true)
+			end
 			maintainGodMode(humanoid)
 		else
 			configureGodHumanoid(humanoid, false)
+			ensureGodForceField(character, false)
 		end
 	end
 	debugLog("GOD_MODE", "enabled=" .. tostring(godMode))
@@ -2572,17 +2729,19 @@ moveBtn.MouseButton1Click:Connect(function()
 		godMode = true
 		clearManualInputState()
 		local root = getRoot()
+		local character = getCharacter()
 		local humanoid = getHumanoid()
 		if root then
 			flyValue.Value = root.CFrame
 			basePos = root.Position
 		end
 		if humanoid and root then
-			applyTravelGodState(humanoid, root)
+			applyFreeGodState(character, humanoid, root)
+			maintainGodMode(humanoid)
 		end
 		debugLog("MANUAL_MOVE", "enabled=true")
 		debugLog("MANUAL_SYNC", string.format("fly=(%s)", formatVectorCompact(flyValue.Value.Position)))
-		status.Text = "MOVE GOD MANUAL"
+		status.Text = "MOVE GOD LIBRE"
 	else
 		debugLog("MANUAL_MOVE", "enabled=false")
 		status.Text = "MOVE GOD OFF"
@@ -2677,6 +2836,8 @@ steppedConn = RS.Stepped:Connect(function()
 	end
 	if isTravelModeActive() then
 		applyTravelGodState(humanoid, root)
+	elseif manualMoveMode then
+		applyFreeGodState(character, humanoid, root)
 	end
 	if humanoid and godMode then
 		maintainGodMode(humanoid)
@@ -2684,11 +2845,13 @@ steppedConn = RS.Stepped:Connect(function()
 	if manualMoveMode and not autoPilot then
 		local moveVector = getManualMoveVector()
 		if moveVector.Magnitude > 0 then
-			local nextPosition = flyValue.Value.Position + (moveVector * manualStepDistance)
+			local currentPosition = root.Position
+			local nextPosition = currentPosition + (moveVector * manualStepDistance)
 			if math.abs(moveVector.Y) > 0 then
-				nextPosition = flyValue.Value.Position + Vector3.new(moveVector.X * manualStepDistance, moveVector.Y * manualVerticalStep, moveVector.Z * manualStepDistance)
+				nextPosition = currentPosition + Vector3.new(moveVector.X * manualStepDistance, moveVector.Y * manualVerticalStep, moveVector.Z * manualStepDistance)
 			end
-			flyValue.Value = CFrame.new(nextPosition)
+			root.CFrame = CFrame.new(nextPosition)
+			flyValue.Value = root.CFrame
 		end
 	end
 
@@ -2724,61 +2887,13 @@ steppedConn = RS.Stepped:Connect(function()
 		end
 	end
 
-pcall(function()
-		local tsunamis = workspace:FindFirstChild("ActiveTsunamis")
-		if tsunamis then
-			for _, wave in ipairs(tsunamis:GetDescendants()) do
-				if wave:IsA("BasePart") then
-					wave.CanTouch = false
-					wave.CanCollide = false
-					wave.CanQuery = false
-					for _, v in ipairs(wave:GetChildren()) do
-						if v:IsA("TouchTransmitter") then
-							v:Destroy()
-						end
-					end
-					if wave.Name == "Hitbox" or wave.Name == "Hitbox2" then
-						wave:Destroy()
-					end
-				end
-			end
-		end
+	scrubWaveHazards(root)
 
-		for _, wacky in ipairs(workspace:GetChildren()) do
-			local nameL = string.lower(wacky.Name)
-			if string.find(nameL, "wacky") or string.find(nameL, "wave") then
-				if wacky:IsA("BasePart") then
-					wacky.CanTouch = false
-					wacky.CanCollide = false
-					wacky.CanQuery = false
-					for _, v in ipairs(wacky:GetChildren()) do
-						if v:IsA("TouchTransmitter") then
-							v:Destroy()
-						end
-					end
-				end
-				for _, wave in ipairs(wacky:GetDescendants()) do
-					if wave:IsA("BasePart") then
-						wave.CanTouch = false
-						wave.CanCollide = false
-						wave.CanQuery = false
-						for _, v in ipairs(wave:GetChildren()) do
-							if v:IsA("TouchTransmitter") then
-								v:Destroy()
-							end
-						end
-						if wave.Name == "Hitbox" or wave.Name == "Hitbox2" then
-							wave:Destroy()
-						end
-					end
-				end
-			end
-		end
-	end)
-
-	root.CFrame = flyValue.Value
-	root.AssemblyLinearVelocity = Vector3.zero
-	root.AssemblyAngularVelocity = Vector3.zero
+	if autoPilot then
+		root.CFrame = flyValue.Value
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+	end
 
 	enforceCharacterNoCollision(character)
 end)
@@ -2800,7 +2915,11 @@ local function bindCharacter(btnRef, statusRef)
 			maintainGodMode(humanoid)
 		end
 		if manualMoveMode or autoPilot then
-			applyTravelGodState(humanoid, getRoot())
+			if autoPilot then
+				applyTravelGodState(humanoid, getRoot())
+			else
+				applyFreeGodState(character, humanoid, getRoot())
+			end
 		end
 		local lastHealth = humanoid.Health
 		healthChangedConn = humanoid.HealthChanged:Connect(function(health)
