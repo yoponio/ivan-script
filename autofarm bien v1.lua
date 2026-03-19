@@ -2705,37 +2705,61 @@ steppedConn = RS.Stepped:Connect(function()
 		end
 	end
 
-        local waveEvasionOffset = Vector3.zero
-        pcall(function()
-                local tsunamis = workspace:FindFirstChild("ActiveTsunamis")
-                if tsunamis then
-                        for _, wave in ipairs(tsunamis:GetChildren()) do
-                                local hitbox = wave:FindFirstChild("Hitbox") or wave:FindFirstChild("Hitbox2") or wave
-                                if hitbox then
-                                        local dist = (Vector3.new(flyValue.Value.X, hitbox.Position.Y, flyValue.Value.Z) - hitbox.Position).Magnitude
-                                        if dist < 65 then
-                                                waveEvasionOffset = Vector3.new(0, 95, 0)
-                                                break
-                                        end
-                                end
-                        end
-                end
-                for _, wacky in ipairs(workspace:GetChildren()) do
-                        local nameL = string.lower(wacky.Name)
-                        if string.find(nameL, "wacky") or string.find(nameL, "wave") then
-                                local hitbox = wacky:FindFirstChild("Hitbox") or wacky:FindFirstChild("Hitbox2") or wacky
-                                if hitbox and hitbox:IsA("BasePart") then
-                                        local dist = (Vector3.new(flyValue.Value.X, hitbox.Position.Y, flyValue.Value.Z) - hitbox.Position).Magnitude
-                                        if dist < 65 then
-                                                waveEvasionOffset = Vector3.new(0, 95, 0)
-                                                break
-                                        end
-                                end
-                        end
-                end
-        end)
+pcall(function()
+		local tsunamis = workspace:FindFirstChild("ActiveTsunamis")
+		if tsunamis then
+			for _, wave in ipairs(tsunamis:GetDescendants()) do
+				if wave:IsA("BasePart") then
+					wave.CanTouch = false
+					wave.CanCollide = false
+					wave.CanQuery = false
+					for _, v in ipairs(wave:GetChildren()) do
+						if v:IsA("TouchTransmitter") then
+							v:Destroy()
+						end
+					end
+					if wave.Name == "Hitbox" or wave.Name == "Hitbox2" then
+						wave:Destroy()
+					end
+				end
+			end
+		end
 
-        root.CFrame = flyValue.Value + waveEvasionOffset
+		for _, wacky in ipairs(workspace:GetChildren()) do
+			local nameL = string.lower(wacky.Name)
+			if string.find(nameL, "wacky") or string.find(nameL, "wave") then
+				if wacky:IsA("BasePart") then
+					wacky.CanTouch = false
+					wacky.CanCollide = false
+					wacky.CanQuery = false
+					for _, v in ipairs(wacky:GetChildren()) do
+						if v:IsA("TouchTransmitter") then
+							v:Destroy()
+						end
+					end
+				end
+				for _, wave in ipairs(wacky:GetDescendants()) do
+					if wave:IsA("BasePart") then
+						wave.CanTouch = false
+						wave.CanCollide = false
+						wave.CanQuery = false
+						for _, v in ipairs(wave:GetChildren()) do
+							if v:IsA("TouchTransmitter") then
+								v:Destroy()
+							end
+						end
+						if wave.Name == "Hitbox" or wave.Name == "Hitbox2" then
+							wave:Destroy()
+						end
+					end
+				end
+			end
+		end
+	end)
+
+	root.CFrame = flyValue.Value
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
 
 	enforceCharacterNoCollision(character)
 end)
