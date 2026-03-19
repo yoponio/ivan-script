@@ -788,6 +788,25 @@ local function configureGodHumanoid(humanoid, enabled)
 	end
 
 	pcall(function()
+		local char = humanoid.Parent
+		if char then
+			if enabled then
+				if not char:FindFirstChild("GodModeForceField") then
+					local ff = Instance.new("ForceField")
+					ff.Name = "GodModeForceField"
+					ff.Visible = false
+					ff.Parent = char
+				end
+			else
+				local ff = char:FindFirstChild("GodModeForceField")
+				if ff then
+					ff:Destroy()
+				end
+			end
+		end
+	end)
+
+	pcall(function()
 		humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, not enabled)
 	end)
 	pcall(function()
