@@ -54,11 +54,6 @@ local travelStepDistance = 120
 local travelStepDelay = 0.04
 local manualStepDistance = 12
 local manualVerticalStep = 7
-local waveAnchorEnabled = true
-local waveAnchorSafeDistance = 24
-local waveAnchorScanRadius = 40
-local waveAnchorNudgeDistance = 14
-local waveAnchorAnchorBias = 0.35
 
 local invCount = 0
 local basePos = nil
@@ -105,8 +100,6 @@ local lastHealthWaitLog = 0
 local healthWaitLogCooldown = 1.0
 local lastGodHealLog = 0
 local lastDeathHandledAt = 0
-local lastWaveAnchorLog = 0
-local waveAnchorLogCooldown = 0.7
 
 local flyValue = Instance.new("CFrameValue")
 
@@ -922,96 +915,6 @@ local function getManualMoveVector()
 		return Vector3.zero
 	end
 	return moveVector.Unit
-end
-
-local function isWaveLikePart(part)
-	if not part or not part:IsA("BasePart") then
-		return false
-	end
-	local lowered = string.lower(part.Name)
-	if lowered:find("wave", 1, true) or lowered:find("tsunami", 1, true) then
-		return true
-	end
-	local parent = part.Parent
-	if parent then
-		local parentName = string.lower(parent.Name)
-		if parentName:find("wave", 1, true) or parentName:find("tsunami", 1, true) then
-			return true
-		end
-	end
-	return false
-end
-
-local function findWaveAnchorPart()
-	local direct = workspace:FindFirstChild("VinzHub_WaveCircle")
-	if direct and direct:IsA("BasePart") then
-		return direct
-	end
-	for _, descendant in ipairs(workspace:GetDescendants()) do
-		if descendant:IsA("BasePart") and string.lower(descendant.Name) == "vinzhub_wavecircle" then
-			return descendant
-		end
-	end
-	return nil
-end
-
-local function getClosestWaveHazard(position)
-	local hazardsRoot = workspace:FindFirstChild("ActiveTsunamis")
-	if not hazardsRoot then
-		return nil, math.huge
-	end
-	local closestPart = nil
-	local closestDistance = math.huge
-	for _, descendant in ipairs(hazardsRoot:GetDescendants()) do
-		if descendant:IsA("BasePart") and isWaveLikePart(descendant) then
-			local distance = (descendant.Position - position).Magnitude
-			if distance < closestDistance then
-				closestDistance = distance
-				closestPart = descendant
-			end
-		end
-	end
-	if closestDistance <= waveAnchorScanRadius then
-		return closestPart, closestDistance
-	end
-	return nil, closestDistance
-end
-
-local function applyWaveAnchorSafety(desiredPosition)
-	if not waveAnchorEnabled then
-		return desiredPosition
-	end
-	local anchorPart = findWaveAnchorPart()
-	local hazardPart, hazardDistance = getClosestWaveHazard(desiredPosition)
-	if not hazardPart then
-		return desiredPosition
-	end
-	if hazardDistance >= waveAnchorSafeDistance then
-		return desiredPosition
-	end
-
-	local hazardPos = hazardPart.Position
-	local away = desiredPosition - hazardPos
-	away = Vector3.new(away.X, 0, away.Z)
-	if away.Magnitude <= 0.001 then
-		away = Vector3.new(1, 0, 0)
-	else
-		away = away.Unit
-	end
-
-	local corrected = desiredPosition + (away * waveAnchorNudgeDistance)
-	if anchorPart then
-		local anchorPos = anchorPart.Position
-		corrected = corrected:Lerp(Vector3.new(anchorPos.X, corrected.Y, anchorPos.Z), waveAnchorAnchorBias)
-	end
-
-	local now = os.clock()
-	if now - lastWaveAnchorLog >= waveAnchorLogCooldown then
-		debugLog("WAVE_ANCHOR", string.format("avoid=%s dist=%.1f to=(%.1f,%.1f,%.1f)", hazardPart:GetFullName(), hazardDistance, corrected.X, corrected.Y, corrected.Z))
-		lastWaveAnchorLog = now
-	end
-
-	return corrected
 end
 
 local function stepTravelTo(goal, runToken)
@@ -2802,16 +2705,37 @@ steppedConn = RS.Stepped:Connect(function()
 		end
 	end
 
-	if isTravelModeActive() then
-		local correctedTarget = applyWaveAnchorSafety(flyValue.Value.Position)
-		if (correctedTarget - flyValue.Value.Position).Magnitude > 0.05 then
-			flyValue.Value = CFrame.new(correctedTarget)
-		end
-	end
+        local waveEvasionOffset = Vector3.zero
+        pcall(function()
+                local tsunamis = workspace:FindFirstChild("ActiveTsunamis")
+                if tsunamis then
+                        for _, wave in ipairs(tsunamis:GetChildren()) do
+                                local hitbox = wave:FindFirstChild("Hitbox") or wave:FindFirstChild("Hitbox2") or wave
+                                if hitbox then
+                                        local dist = (Vector3.new(flyValue.Value.X, hitbox.Position.Y, flyValue.Value.Z) - hitbox.Position).Magnitude
+                                        if dist < 65 then
+                                                waveEvasionOffset = Vector3.new(0, 95, 0)
+                                                break
+                                        end
+                                end
+                        end
+                end
+                for _, wacky in ipairs(workspace:GetChildren()) do
+                        local nameL = string.lower(wacky.Name)
+                        if string.find(nameL, "wacky") or string.find(nameL, "wave") then
+                                local hitbox = wacky:FindFirstChild("Hitbox") or wacky:FindFirstChild("Hitbox2") or wacky
+                                if hitbox and hitbox:IsA("BasePart") then
+                                        local dist = (Vector3.new(flyValue.Value.X, hitbox.Position.Y, flyValue.Value.Z) - hitbox.Position).Magnitude
+                                        if dist < 65 then
+                                                waveEvasionOffset = Vector3.new(0, 95, 0)
+                                                break
+                                        end
+                                end
+                        end
+                end
+        end)
 
-	root.CFrame = flyValue.Value
-	root.AssemblyLinearVelocity = Vector3.zero
-	root.AssemblyAngularVelocity = Vector3.zero
+        root.CFrame = flyValue.Value + waveEvasionOffset
 
 	enforceCharacterNoCollision(character)
 end)
