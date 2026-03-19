@@ -66,7 +66,7 @@ local currentTarget = nil
 local targetCache = {}
 local lastScan = 0
 local scanInterval = 0.35
-local waveCleanupInterval = 1.0
+local waveCleanupInterval = 0.15
 local nextWaveCleanup = 0
 local forceRescan = false
 local lastDepositAttempt = 0
@@ -802,12 +802,16 @@ local function configureGodHumanoid(humanoid, enabled)
 		humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, not enabled)
 	end)
 	pcall(function()
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, not enabled)
+	end)
+	pcall(function()
 		humanoid.BreakJointsOnDeath = not enabled
 	end)
 end
 
 local function maintainGodMode(humanoid)
-	if not godMode or not humanoid or humanoid.Health <= 0 then
+	local travelActive = autoPilot or manualMoveMode
+	if (not godMode and not travelActive) or not humanoid or humanoid.Health <= 0 then
 		return
 	end
 
@@ -840,6 +844,15 @@ local function applyTravelGodState(humanoid, root)
 		root.CanTouch = false
 		root.AssemblyLinearVelocity = Vector3.zero
 		root.AssemblyAngularVelocity = Vector3.zero
+	end
+	local character = LP.Character
+	if character then
+		for _, v in ipairs(character:GetDescendants()) do
+			if v:IsA("BasePart") then
+				v.CanCollide = false
+				v.CanTouch = false
+			end
+		end
 	end
 	collisionModeLabel = "TRAVEL-GOD"
 	if mainButton then
@@ -2648,7 +2661,7 @@ steppedConn = RS.Stepped:Connect(function()
 	if isTravelModeActive() then
 		applyTravelGodState(humanoid, root)
 	end
-	if humanoid and godMode then
+	if humanoid and (godMode or isTravelModeActive()) then
 		maintainGodMode(humanoid)
 	end
 	if manualMoveMode and not autoPilot then
