@@ -32,6 +32,7 @@ if not LP then
 	return
 end
 
+local observerGuiName = "EscanerObserver"
 local scannerVersion = "escaner-r3-godtrace"
 local maxStoredLogs = 1200
 local maxVisibleLogs = 180
@@ -258,6 +259,17 @@ local function safeText(instance)
 		end
 	end)
 	return table.concat(chunks, " | ")
+end
+
+local function isInsideObserverGui(instance)
+	local current = instance
+	while current do
+		if safeName(current) == observerGuiName then
+			return true
+		end
+		current = current.Parent
+	end
+	return false
 end
 
 local function lowerText(instance)
@@ -1018,6 +1030,7 @@ local function collectGuiMatches(rootGui, results)
 		return
 	end
 	for _, descendant in ipairs(rootGui:GetDescendants()) do
+		if not isInsideObserverGui(descendant)
 		if (safeIsA(descendant, "TextLabel") or safeIsA(descendant, "TextButton")) and isGuiVisible(descendant) then
 			local text = safeText(descendant)
 			local matched, keyword = containsInterestingKeyword(text)
@@ -1029,6 +1042,7 @@ local function collectGuiMatches(rootGui, results)
 					area = getGuiArea(descendant),
 				})
 			end
+		end
 		end
 	end
 	end
@@ -1229,12 +1243,13 @@ local function pollNearbyPrompts()
 local function createUi()
 	local parent = getGuiParent()
 	local oldGui = parent:FindFirstChild("EscanerObserver")
+	local oldGui = parent:FindFirstChild(observerGuiName)
 	if oldGui then
 		oldGui:Destroy()
 	end
 
 	local sg = Instance.new("ScreenGui")
-	sg.Name = "EscanerObserver"
+	sg.Name = observerGuiName
 	sg.ResetOnSpawn = false
 	sg.Parent = parent
 
