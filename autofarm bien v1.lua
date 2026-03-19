@@ -54,6 +54,11 @@ local travelStepDistance = 120
 local travelStepDelay = 0.04
 local manualStepDistance = 12
 local manualVerticalStep = 7
+local waveAnchorEnabled = true
+local waveAnchorSafeDistance = 24
+local waveAnchorScanRadius = 40
+local waveAnchorNudgeDistance = 14
+local waveAnchorAnchorBias = 0.35
 
 local invCount = 0
 local basePos = nil
@@ -66,7 +71,7 @@ local currentTarget = nil
 local targetCache = {}
 local lastScan = 0
 local scanInterval = 0.35
-local waveCleanupInterval = 0.15
+local waveCleanupInterval = 1.0
 local nextWaveCleanup = 0
 local forceRescan = false
 local lastDepositAttempt = 0
@@ -99,6 +104,9 @@ local toolSyncBlockedUntil = 0
 local lastHealthWaitLog = 0
 local healthWaitLogCooldown = 1.0
 local lastGodHealLog = 0
+local lastDeathHandledAt = 0
+local lastWaveAnchorLog = 0
+local waveAnchorLogCooldown = 0.7
 
 local flyValue = Instance.new("CFrameValue")
 
@@ -802,16 +810,12 @@ local function configureGodHumanoid(humanoid, enabled)
 		humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, not enabled)
 	end)
 	pcall(function()
-		humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, not enabled)
-	end)
-	pcall(function()
 		humanoid.BreakJointsOnDeath = not enabled
 	end)
 end
 
 local function maintainGodMode(humanoid)
-	local travelActive = autoPilot or manualMoveMode
-	if (not godMode and not travelActive) or not humanoid or humanoid.Health <= 0 then
+	if not godMode or not humanoid or humanoid.Health <= 0 then
 		return
 	end
 
@@ -845,15 +849,6 @@ local function applyTravelGodState(humanoid, root)
 		root.AssemblyLinearVelocity = Vector3.zero
 		root.AssemblyAngularVelocity = Vector3.zero
 	end
-	local character = LP.Character
-	if character then
-		for _, v in ipairs(character:GetDescendants()) do
-			if v:IsA("BasePart") then
-				v.CanCollide = false
-				v.CanTouch = false
-			end
-		end
-	end
 	collisionModeLabel = "TRAVEL-GOD"
 	if mainButton then
 		updateButtonState(mainButton)
@@ -881,6 +876,13 @@ local function getManualMoveVector()
 	if not camera then
 		return Vector3.zero
 	end
+	local focusedTextBox = UIS:GetFocusedTextBox()
+	local function keyDown(keyCode)
+		if focusedTextBox then
+			return false
+		end
+		return activeManualKeys[keyCode] == true or UIS:IsKeyDown(keyCode)
+	end
 
 	local lookVector = camera.CFrame.LookVector
 	local flatForward = Vector3.new(lookVector.X, 0, lookVector.Z)
@@ -897,22 +899,22 @@ local function getManualMoveVector()
 	end
 
 	local moveVector = Vector3.zero
-	if activeManualKeys[Enum.KeyCode.W] or activeManualKeys[Enum.KeyCode.Up] then
+	if keyDown(Enum.KeyCode.W) or keyDown(Enum.KeyCode.Up) then
 		moveVector = moveVector + flatForward
 	end
-	if activeManualKeys[Enum.KeyCode.S] or activeManualKeys[Enum.KeyCode.Down] then
+	if keyDown(Enum.KeyCode.S) or keyDown(Enum.KeyCode.Down) then
 		moveVector = moveVector - flatForward
 	end
-	if activeManualKeys[Enum.KeyCode.D] or activeManualKeys[Enum.KeyCode.Right] then
+	if keyDown(Enum.KeyCode.D) or keyDown(Enum.KeyCode.Right) then
 		moveVector = moveVector + flatRight
 	end
-	if activeManualKeys[Enum.KeyCode.A] or activeManualKeys[Enum.KeyCode.Left] then
+	if keyDown(Enum.KeyCode.A) or keyDown(Enum.KeyCode.Left) then
 		moveVector = moveVector - flatRight
 	end
-	if activeManualKeys[Enum.KeyCode.Space] or activeManualKeys[Enum.KeyCode.E] then
+	if keyDown(Enum.KeyCode.Space) or keyDown(Enum.KeyCode.E) then
 		moveVector = moveVector + Vector3.new(0, 1, 0)
 	end
-	if activeManualKeys[Enum.KeyCode.LeftControl] or activeManualKeys[Enum.KeyCode.C] or activeManualKeys[Enum.KeyCode.Q] then
+	if keyDown(Enum.KeyCode.LeftControl) or keyDown(Enum.KeyCode.C) or keyDown(Enum.KeyCode.Q) then
 		moveVector = moveVector - Vector3.new(0, 1, 0)
 	end
 
@@ -920,6 +922,96 @@ local function getManualMoveVector()
 		return Vector3.zero
 	end
 	return moveVector.Unit
+end
+
+local function isWaveLikePart(part)
+	if not part or not part:IsA("BasePart") then
+		return false
+	end
+	local lowered = string.lower(part.Name)
+	if lowered:find("wave", 1, true) or lowered:find("tsunami", 1, true) then
+		return true
+	end
+	local parent = part.Parent
+	if parent then
+		local parentName = string.lower(parent.Name)
+		if parentName:find("wave", 1, true) or parentName:find("tsunami", 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+local function findWaveAnchorPart()
+	local direct = workspace:FindFirstChild("VinzHub_WaveCircle")
+	if direct and direct:IsA("BasePart") then
+		return direct
+	end
+	for _, descendant in ipairs(workspace:GetDescendants()) do
+		if descendant:IsA("BasePart") and string.lower(descendant.Name) == "vinzhub_wavecircle" then
+			return descendant
+		end
+	end
+	return nil
+end
+
+local function getClosestWaveHazard(position)
+	local hazardsRoot = workspace:FindFirstChild("ActiveTsunamis")
+	if not hazardsRoot then
+		return nil, math.huge
+	end
+	local closestPart = nil
+	local closestDistance = math.huge
+	for _, descendant in ipairs(hazardsRoot:GetDescendants()) do
+		if descendant:IsA("BasePart") and isWaveLikePart(descendant) then
+			local distance = (descendant.Position - position).Magnitude
+			if distance < closestDistance then
+				closestDistance = distance
+				closestPart = descendant
+			end
+		end
+	end
+	if closestDistance <= waveAnchorScanRadius then
+		return closestPart, closestDistance
+	end
+	return nil, closestDistance
+end
+
+local function applyWaveAnchorSafety(desiredPosition)
+	if not waveAnchorEnabled then
+		return desiredPosition
+	end
+	local anchorPart = findWaveAnchorPart()
+	local hazardPart, hazardDistance = getClosestWaveHazard(desiredPosition)
+	if not hazardPart then
+		return desiredPosition
+	end
+	if hazardDistance >= waveAnchorSafeDistance then
+		return desiredPosition
+	end
+
+	local hazardPos = hazardPart.Position
+	local away = desiredPosition - hazardPos
+	away = Vector3.new(away.X, 0, away.Z)
+	if away.Magnitude <= 0.001 then
+		away = Vector3.new(1, 0, 0)
+	else
+		away = away.Unit
+	end
+
+	local corrected = desiredPosition + (away * waveAnchorNudgeDistance)
+	if anchorPart then
+		local anchorPos = anchorPart.Position
+		corrected = corrected:Lerp(Vector3.new(anchorPos.X, corrected.Y, anchorPos.Z), waveAnchorAnchorBias)
+	end
+
+	local now = os.clock()
+	if now - lastWaveAnchorLog >= waveAnchorLogCooldown then
+		debugLog("WAVE_ANCHOR", string.format("avoid=%s dist=%.1f to=(%.1f,%.1f,%.1f)", hazardPart:GetFullName(), hazardDistance, corrected.X, corrected.Y, corrected.Z))
+		lastWaveAnchorLog = now
+	end
+
+	return corrected
 end
 
 local function stepTravelTo(goal, runToken)
@@ -1299,8 +1391,11 @@ if inputEndedConn then
 	inputEndedConn = nil
 end
 
-inputBeganConn = UIS.InputBegan:Connect(function(input, gameProcessed)
-	if scriptClosed or gameProcessed then
+inputBeganConn = UIS.InputBegan:Connect(function(input, _)
+	if scriptClosed then
+		return
+	end
+	if input.UserInputType ~= Enum.UserInputType.Keyboard then
 		return
 	end
 	activeManualKeys[input.KeyCode] = true
@@ -2661,7 +2756,7 @@ steppedConn = RS.Stepped:Connect(function()
 	if isTravelModeActive() then
 		applyTravelGodState(humanoid, root)
 	end
-	if humanoid and (godMode or isTravelModeActive()) then
+	if humanoid and godMode then
 		maintainGodMode(humanoid)
 	end
 	if manualMoveMode and not autoPilot then
@@ -2704,6 +2799,13 @@ steppedConn = RS.Stepped:Connect(function()
 				string.format("dist=%.2f root=(%s) fly=(%s) vel=%.2f", desyncDistance, formatVectorCompact(root.Position), formatVectorCompact(flyValue.Value.Position), root.AssemblyLinearVelocity.Magnitude),
 				lastDesyncInterferenceLog
 			)
+		end
+	end
+
+	if isTravelModeActive() then
+		local correctedTarget = applyWaveAnchorSafety(flyValue.Value.Position)
+		if (correctedTarget - flyValue.Value.Position).Magnitude > 0.05 then
+			flyValue.Value = CFrame.new(correctedTarget)
 		end
 	end
 
@@ -2794,6 +2896,11 @@ local function bindCharacter(btnRef, statusRef)
 			if scriptClosed then
 				return
 			end
+			local now = os.clock()
+			if now - lastDeathHandledAt < 0.9 then
+				return
+			end
+			lastDeathHandledAt = now
 			isRespawning = true
 			manualMoveMode = false
 			clearManualInputState()
