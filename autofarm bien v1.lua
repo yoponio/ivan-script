@@ -720,6 +720,8 @@ function Motor:ExecuteBurst(targetRoot, prompt, cCobro, burstToken)
     local triggeredObserved = false
     local promptHiddenObserved = false
     local postTriggerReleaseActive = false
+    local postTriggerReleaseUntil = 0
+    local postTriggerResealLogged = false
     local targetContainer = targetRoot and targetRoot.Parent or nil
     local activeBrainrots = workspace:FindFirstChild("ActiveBrainrots")
     local toolSnapshotBefore = GetOwnedToolCounts()
@@ -767,8 +769,10 @@ function Motor:ExecuteBurst(targetRoot, prompt, cCobro, burstToken)
     end
 
     local function enablePostTriggerRelease(reason)
-        if postTriggerReleaseActive or not Config.BurstPostTriggerRelease then return end
+        if not Config.BurstPostTriggerRelease then return end
         postTriggerReleaseActive = true
+        postTriggerReleaseUntil = math.max(postTriggerReleaseUntil, tick() + Config.BurstPostTriggerGrace)
+        postTriggerResealLogged = false
         Logger:Log("[TELEMETRY] POST_TRIGGER_RELEASE: " .. tostring(reason), Color3.new(0, 1, 1))
     end
 
@@ -923,10 +927,17 @@ function Motor:ExecuteBurst(targetRoot, prompt, cCobro, burstToken)
         if not liveChar or not liveRoot then return end
 
         if allowFree and postTriggerReleaseActive then
-            if liveRoot.Anchored then
-                Motor:ReleaseCharacter(liveRoot)
+            if tick() <= postTriggerReleaseUntil then
+                if liveRoot.Anchored then
+                    Motor:ReleaseCharacter(liveRoot)
+                end
+                return
             end
-            return
+
+            if not postTriggerResealLogged then
+                postTriggerResealLogged = true
+                Logger:Log("[TELEMETRY] POST_TRIGGER_RESEAL", Color3.new(1, 1, 0))
+            end
         end
 
         Motor:SealCharacter(liveRoot)
@@ -1611,5 +1622,5 @@ _G.IvanFarmer_Cleanup = function()
     if CoreGui:FindFirstChild(scriptName) then CoreGui[scriptName]:Destroy() end
 end
 
-Logger:Log("V233 Safe Prompt Height Ready.", Color3.new(0, 1, 0.4))
+Logger:Log("V234 Post Trigger Release Ready.", Color3.new(0, 1, 0.4))
 Logger:Log(string.format("[CONFIG] PromptRootOff=%.2f | Dist=%.1f | StartHP=%.0f | RecoverHP=%.0f | Burst=%s | PromptMax=%.0f | Attempts=%d | RetryCD=%.2f", Config.BurstPromptRootOffset, Config.Distancia, Config.MinStartHealth, Config.MinRecoverHealth, Config.BurstMode, Config.BurstPromptMaxDistance, Config.BurstRapidAttempts, Config.TargetRetryCooldown), Color3.new(0, 1, 1))
