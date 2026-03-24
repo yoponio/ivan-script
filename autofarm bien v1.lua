@@ -1,13 +1,16 @@
 --[[
-BRAINROT FARMER V234 - POST TRIGGER RELEASE
+BRAINROT FARMER V235 - CARRY SWAP AUTO RESUME
 Arquitectura: FSM Estricta, DEAD terminal, recovery estable y BURST sellado seguro
 
-CAMBIOS V234:
+CAMBIOS V235:
 1. DEAD es terminal y solo se libera con CharacterAdded estable.
 2. Se separa salud minima de arranque y salud minima de recuperacion.
 3. El burst usa hold real cuando el prompt lo requiere.
 4. Despues del trigger real se libera el character para dejar pasar el carry del servidor.
 5. Se confirma pickup por HoldWeld, RenderedBrainrot en character y reparent al jugador.
+6. NUEVO: Carry Swap Auto Resume - si la entidad falla DESPUES del trigger, el juego
+   esta haciendo un swap de personaje (mecanica carry). En ese caso NO se detiene el
+   script en CharacterRemoving, y el farming reanuda automaticamente tras el respawn.
 ]]
 
 local Players = game:GetService("Players")
@@ -16,7 +19,7 @@ local CoreGui = game:GetService("CoreGui")
 local UIS = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
-local scriptName = "IvanForensicsV234"
+local scriptName = "IvanForensicsV235"
 
 if _G.IvanFarmer_Cleanup then _G.IvanFarmer_Cleanup() end
 
@@ -58,6 +61,7 @@ local Config = {
     AutoReleaseRetryEvery = 0.40,
     BurstConfirmFrames = 3,
     BurstPostTriggerGrace = 0.22,
+    BurstCarrySwapAutoResume = true,
     BurstFallbackFireInHold = false,
     BurstCarryConfirmWindow = 0.90,
     BurstPromptMaxDistance = 100,
@@ -100,7 +104,7 @@ main.Active = true
 local topBar = Instance.new("Frame", main); topBar.Name = "TopBar"; topBar.Size = UDim2.new(1, 0, 0, 30); topBar.BackgroundColor3 = Color3.fromRGB(0, 160, 80)
 topBar.Active = true
 
-local title = Instance.new("TextLabel", topBar); title.Size = UDim2.new(1, -34, 1, 0); title.Position = UDim2.new(0, 6, 0, 0); title.BackgroundTransparency = 1; title.Text = "V234 - POST TRIGGER RELEASE"; title.TextColor3 = Color3.new(1,1,1); title.Font = Enum.Font.SourceSansBold; title.TextSize = 14; title.TextXAlignment = Enum.TextXAlignment.Left
+local title = Instance.new("TextLabel", topBar); title.Size = UDim2.new(1, -34, 1, 0); title.Position = UDim2.new(0, 6, 0, 0); title.BackgroundTransparency = 1; title.Text = "V235 - CARRY SWAP AUTO RESUME"; title.TextColor3 = Color3.new(1,1,1); title.Font = Enum.Font.SourceSansBold; title.TextSize = 14; title.TextXAlignment = Enum.TextXAlignment.Left
 local btnToggle = Instance.new("TextButton", topBar); btnToggle.Size = UDim2.new(0, 28, 0, 22); btnToggle.Position = UDim2.new(1, -31, 0, 4); btnToggle.Text = "−"; btnToggle.BackgroundColor3 = Color3.fromRGB(40, 40, 40); btnToggle.TextColor3 = Color3.new(1,1,1)
 
 local logBox = Instance.new("ScrollingFrame", main); logBox.Name = "LogBox"; logBox.Size = UDim2.new(0.9, 0, 0, 130); logBox.Position = UDim2.new(0.05, 0, 0, 128); logBox.BackgroundColor3 = Color3.fromRGB(5, 5, 5); logBox.ScrollBarThickness = 4
@@ -162,6 +166,7 @@ local FSM = {
     LastEmergencyAt = 0,
     LastRespawnAt = 0,
     DeadLatch = false,
+    PostTriggerRemovalExpected = false,
     LastStartBlockLogAt = 0,
     LastStabilityPos = nil,
     PendingSafeRelease = false,
@@ -978,7 +983,13 @@ function Motor:ExecuteBurst(targetRoot, prompt, cCobro, burstToken)
 
             local charS, hrpS, humS = FSM:GetValidEntity()
             if not hrpS or not charS or not humS then
-                Logger:Log("[TELEMETRY] ENTITY_LOST_SETTLE: " .. getEntityLossReason(), Color3.new(1, 0, 0))
+                local lossReason = getEntityLossReason()
+                Logger:Log("[TELEMETRY] ENTITY_LOST_SETTLE: " .. lossReason, Color3.new(1, 0, 0))
+                if triggeredObserved and Config.BurstCarrySwapAutoResume then
+                    FSM.PostTriggerRemovalExpected = true
+                    FSM:MarkTargetCooldown(targetRoot, prompt, Config.TargetRetryCooldown, "CARRY_SWAP_SETTLE")
+                    Logger:Log("[CARRY_SWAP] PostTriggerRemovalExpected SET (settle)", Color3.new(1, 1, 0))
+                end
                 return false, "NO_ENTITY"
             end
 
@@ -1239,7 +1250,13 @@ function Motor:ExecuteBurst(targetRoot, prompt, cCobro, burstToken)
 
         local charB, hrpB, humB = FSM:GetValidEntity()
         if not hrpB or not charB or not humB then
-            Logger:Log("[TELEMETRY] ENTITY_LOST_CONFIRM: " .. getEntityLossReason(), Color3.new(1, 0, 0))
+            local lossReason = getEntityLossReason()
+            Logger:Log("[TELEMETRY] ENTITY_LOST_CONFIRM: " .. lossReason, Color3.new(1, 0, 0))
+            if triggeredObserved and Config.BurstCarrySwapAutoResume then
+                FSM.PostTriggerRemovalExpected = true
+                FSM:MarkTargetCooldown(targetRoot, prompt, Config.TargetRetryCooldown, "CARRY_SWAP_CONFIRM")
+                Logger:Log("[CARRY_SWAP] PostTriggerRemovalExpected SET (confirm): " .. lossReason, Color3.new(1, 1, 0))
+            end
             return finishBurst(false, "NO_ENTITY")
         end
 
@@ -1604,10 +1621,17 @@ end)
 
 safeConnect(player.CharacterRemoving, function(char)
     Logger:Dump("CHARACTER_REMOVING")
+    local isCarrySwap = FSM.PostTriggerRemovalExpected
+    FSM.PostTriggerRemovalExpected = false
     FSM:TransitionTo("DEAD", "CharRemoving")
     FSM.LastStabilityPos = nil
-    FSM.Session += 1; Config.Activo = false
-    btnAction.Text = "INICIAR"; btnAction.BackgroundColor3 = Color3.fromRGB(0, 150, 50)
+    FSM.Session += 1
+    if isCarrySwap and Config.BurstCarrySwapAutoResume then
+        Logger:Log("[CARRY_SWAP] CharRemoving post-trigger: mantener Activo para reanudar", Color3.new(0, 1, 1))
+    else
+        Config.Activo = false
+        btnAction.Text = "INICIAR"; btnAction.BackgroundColor3 = Color3.fromRGB(0, 150, 50)
+    end
 end)
 
 safeConnect(player.CharacterAdded, function(char)
@@ -1654,5 +1678,5 @@ _G.IvanFarmer_Cleanup = function()
     if CoreGui:FindFirstChild(scriptName) then CoreGui[scriptName]:Destroy() end
 end
 
-Logger:Log("V234 Post Trigger Release Ready.", Color3.new(0, 1, 0.4))
+Logger:Log("V235 Carry Swap Auto Resume Ready.", Color3.new(0, 1, 0.4))
 Logger:Log(string.format("[CONFIG] PromptRootOff=%.2f | Dist=%.1f | StartHP=%.0f | RecoverHP=%.0f | Burst=%s | PromptMax=%.0f | Attempts=%d | RetryCD=%.2f", Config.BurstPromptRootOffset, Config.Distancia, Config.MinStartHealth, Config.MinRecoverHealth, Config.BurstMode, Config.BurstPromptMaxDistance, Config.BurstRapidAttempts, Config.TargetRetryCooldown), Color3.new(0, 1, 1))
