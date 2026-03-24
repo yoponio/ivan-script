@@ -57,7 +57,7 @@ local Config = {
     BurstHoldPadding = 0.25,
     AutoReleaseRetryEvery = 0.40,
     BurstConfirmFrames = 3,
-    BurstPostTriggerGrace = 0.60,
+    BurstPostTriggerGrace = 0.22,
     BurstFallbackFireInHold = false,
     BurstCarryConfirmWindow = 0.90,
     BurstPromptMaxDistance = 100,
@@ -783,6 +783,29 @@ function Motor:ExecuteBurst(targetRoot, prompt, cCobro, burstToken)
         table.clear(tempConnections)
     end
 
+    local function getEntityLossReason()
+        local liveChar = player.Character
+        if not liveChar then
+            return "CHAR_NIL"
+        end
+
+        local liveRoot = liveChar:FindFirstChild("HumanoidRootPart")
+        if not liveRoot then
+            return "HRP_NIL"
+        end
+
+        local liveHum = liveChar:FindFirstChildOfClass("Humanoid")
+        if not liveHum then
+            return "HUM_NIL"
+        end
+
+        if liveHum.Health <= 0 then
+            return "HUM_DEAD"
+        end
+
+        return string.format("UNSPECIFIED hp=%.1f anchored=%s y=%.2f", liveHum.Health, tostring(liveRoot.Anchored), liveRoot.Position.Y)
+    end
+
     local function getCarryConfirmation()
         local toolSnapshotNow = GetOwnedToolCounts()
         local equippedDelta, equippedNames = GetPositiveToolDelta(toolSnapshotBefore.characterByName, toolSnapshotNow.characterByName)
@@ -954,7 +977,10 @@ function Motor:ExecuteBurst(targetRoot, prompt, cCobro, burstToken)
             if FSM.StateID ~= burstToken then return false, "STATE_OVERRIDDEN" end
 
             local charS, hrpS, humS = FSM:GetValidEntity()
-            if not hrpS or not charS or not humS then return false, "NO_ENTITY" end
+            if not hrpS or not charS or not humS then
+                Logger:Log("[TELEMETRY] ENTITY_LOST_SETTLE: " .. getEntityLossReason(), Color3.new(1, 0, 0))
+                return false, "NO_ENTITY"
+            end
 
             local lastHP = humS:GetAttribute("LastHP") or humS.Health
             if humS.Health < lastHP then return false, "HP_DROPPED_IN_BURST" end
@@ -1152,7 +1178,10 @@ function Motor:ExecuteBurst(targetRoot, prompt, cCobro, burstToken)
         if FSM.StateID ~= burstToken then return finishBurst(false, "STATE_OVERRIDDEN") end
 
         local charB, hrpB, humB = FSM:GetValidEntity()
-        if not hrpB or not charB or not humB then return finishBurst(false, "NO_ENTITY") end
+        if not hrpB or not charB or not humB then
+            Logger:Log("[TELEMETRY] ENTITY_LOST_PRE_FIRE: " .. getEntityLossReason(), Color3.new(1, 0, 0))
+            return finishBurst(false, "NO_ENTITY")
+        end
 
         local lastHP = humB:GetAttribute("LastHP") or humB.Health
         if humB.Health < lastHP then return finishBurst(false, "HP_DROPPED_IN_BURST") end
@@ -1209,7 +1238,10 @@ function Motor:ExecuteBurst(targetRoot, prompt, cCobro, burstToken)
         if FSM.StateID ~= burstToken then return finishBurst(false, "STATE_OVERRIDDEN") end
 
         local charB, hrpB, humB = FSM:GetValidEntity()
-        if not hrpB or not charB or not humB then return finishBurst(false, "NO_ENTITY") end
+        if not hrpB or not charB or not humB then
+            Logger:Log("[TELEMETRY] ENTITY_LOST_CONFIRM: " .. getEntityLossReason(), Color3.new(1, 0, 0))
+            return finishBurst(false, "NO_ENTITY")
+        end
 
         local lastHP = humB:GetAttribute("LastHP") or humB.Health
         if humB.Health < lastHP then return finishBurst(false, "HP_DROPPED_IN_BURST") end
